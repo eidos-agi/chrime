@@ -39,6 +39,8 @@ printf '%s\n' \
 | `navigate` | `url` | nav result (ok, url, status, title) |
 | `snapshot` | — | the semantic DOM: nodes with `node_id`, `role`, `text`, `href`, `clickable` |
 | `read` | — | full page text |
+| `links` | — | every link on the page (`node_id`, `text`, `href`) |
+| `find_text` | `text` | nodes whose text contains the substring — how an agent finds "the login button" |
 | `click` | `node_id` | follows the node's link (v0: href only; v1 will run JS handlers) |
 | `current` | — | current URL |
 

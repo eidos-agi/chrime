@@ -59,6 +59,10 @@ trait Engine {
     fn read_text(&self) -> String;
     fn click(&mut self, node_id: u32) -> NavResult;
     fn current_url(&self) -> Option<String>;
+    /// Every clickable link on the page, with its node-id and resolved href.
+    fn links(&self) -> Vec<DomNode>;
+    /// Nodes whose text contains `q` (case-insensitive) — how an agent finds "the login button".
+    fn find_text(&self, q: &str) -> Vec<DomNode>;
 }
 
 struct StaticEngine {
@@ -212,6 +216,23 @@ impl Engine for StaticEngine {
     fn current_url(&self) -> Option<String> {
         self.url.as_ref().map(|u| u.to_string())
     }
+
+    fn links(&self) -> Vec<DomNode> {
+        self.walk()
+            .0
+            .into_iter()
+            .filter(|n| n.clickable && n.href.is_some())
+            .collect()
+    }
+
+    fn find_text(&self, q: &str) -> Vec<DomNode> {
+        let ql = q.to_lowercase();
+        self.walk()
+            .0
+            .into_iter()
+            .filter(|n| !ql.is_empty() && n.text.to_lowercase().contains(&ql))
+            .collect()
+    }
 }
 
 fn interesting(tag: &str) -> bool {
@@ -272,7 +293,7 @@ fn normalize(raw: &str, base: Option<&Url>) -> Result<Url, String> {
 fn handle(eng: &mut dyn Engine, line: &str) -> String {
     let v: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
-        Err(e) => return err(&format!("bad json: {}", e)),
+        Err(e) => return err("bad_json", &format!("bad json: {}", e)),
     };
     match v.get("op").and_then(|o| o.as_str()).unwrap_or("") {
         "navigate" => {
@@ -281,18 +302,23 @@ fn handle(eng: &mut dyn Engine, line: &str) -> String {
         }
         "snapshot" => serde_json::to_string(&eng.snapshot()).unwrap(),
         "read" => serde_json::json!({ "text": eng.read_text() }).to_string(),
+        "links" => serde_json::to_string(&eng.links()).unwrap(),
+        "find_text" => {
+            let q = v.get("text").and_then(|t| t.as_str()).unwrap_or("");
+            serde_json::to_string(&eng.find_text(q)).unwrap()
+        }
         "click" => {
             let id = v.get("node_id").and_then(|n| n.as_u64()).unwrap_or(0) as u32;
             serde_json::to_string(&eng.click(id)).unwrap()
         }
         "current" => serde_json::json!({ "url": eng.current_url() }).to_string(),
         "quit" => std::process::exit(0),
-        other => err(&format!("unknown op '{}'", other)),
+        other => err("unknown_op", &format!("unknown op '{}'", other)),
     }
 }
 
-fn err(msg: &str) -> String {
-    serde_json::json!({ "ok": false, "error": msg }).to_string()
+fn err(code: &str, msg: &str) -> String {
+    serde_json::json!({ "ok": false, "code": code, "error": msg }).to_string()
 }
 
 // ---- the HEAD: a terminal render of the semantic DOM (default when a human runs chrime) ----
@@ -448,6 +474,10 @@ fn run_api(eng: &mut dyn Engine) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-v") {
+        println!("chrime {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     // Headed by default. Agents opt into the raw JSON API with --api (alias --headless).
     let api = args.iter().any(|a| a == "--api" || a == "--headless");
     let start = args.iter().find(|a| !a.starts_with("--")).cloned();
@@ -456,5 +486,49 @@ fn main() {
         run_api(&mut eng);
     } else {
         headed(&mut eng, start);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_resolves_urls() {
+        assert_eq!(
+            normalize("example.com", None).unwrap().as_str(),
+            "https://example.com/"
+        );
+        assert_eq!(
+            normalize("https://a.com/x", None).unwrap().as_str(),
+            "https://a.com/x"
+        );
+        let base = Url::parse("https://a.com/x/").unwrap();
+        assert_eq!(
+            normalize("y", Some(&base)).unwrap().as_str(),
+            "https://a.com/x/y"
+        );
+        assert!(normalize("hello there", None)
+            .unwrap()
+            .as_str()
+            .contains("duckduckgo"));
+    }
+
+    #[test]
+    fn walk_yields_semantic_nodes() {
+        let mut e = StaticEngine::new();
+        e.html = "<html><head><title>T</title></head><body><h1>Head</h1>\
+                  <a href='/x'>Link</a><p>Para</p></body></html>"
+            .into();
+        e.url = Some(Url::parse("https://ex.com/").unwrap());
+        let (nodes, title) = e.walk();
+        assert_eq!(title.as_deref(), Some("T"));
+        assert!(nodes.iter().any(|n| n.role == "heading" && n.text == "Head"));
+        let link = nodes.iter().find(|n| n.role == "link").unwrap();
+        assert_eq!(link.href.as_deref(), Some("https://ex.com/x"));
+        assert!(link.clickable);
+        assert_eq!(e.links().len(), 1);
+        assert_eq!(e.find_text("para").len(), 1);
+        assert_eq!(e.find_text("nope").len(), 0);
     }
 }
