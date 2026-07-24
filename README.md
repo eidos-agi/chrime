@@ -1,5 +1,9 @@
 # chrime
 
+> 🎭 **A member of the [Fraude family](https://github.com/eidos-agi/fraude-code)** — alongside
+> `fraude-code` and the Fraude OS apps (Chrime · Gfail · Schemes · Extort). The family joke is
+> that the brand is a costume but the work is real. Chrime is the most real of the bunch.
+
 **A browser built for AI agents, not humans.** No GUI, no pixel pipeline. The interface is an
 API; what it exposes is the DOM as a compact semantic tree with stable node-ids — the thing an
 agent's decision loop actually needs.

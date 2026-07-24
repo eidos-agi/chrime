@@ -367,6 +367,9 @@ fn render(eng: &dyn Engine) -> Vec<u32> {
     println!(
         "\x1b[38;5;244m URL to go · number to open a link · b back · r read · q quit\x1b[0m"
     );
+    println!(
+        "\x1b[38;5;240m 🎭 a member of the Fraude family — the fraud that does real work\x1b[0m"
+    );
     clickmap
 }
 
