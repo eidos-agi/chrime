@@ -49,17 +49,17 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 35. [x] fraude-os repo set up, builds green, pushed
 
 ## Fraude Code — deferred + requested
-36. [ ] Replace README ASCII banner with the current octopus render
-37. [ ] Replace splash screenshot with the latest welcome
+36. [x] Replace README ASCII banner with the current octopus render
+37. [x] Replace splash screenshot with the latest welcome
 38. [ ] The "10 VHS examples" model — 10 tapes → 10 gifs
-39. [ ] Welcome hero gif
+39. [x] Welcome hero gif
 40. [ ] Version gag (report a Claude-like build string)
 41. [ ] Narrow-terminal collapse
 42. [x] flickercheck detector + Ink `<Static>` fix (no more flicker)
 43. [x] Section-aligned welcome + parody accomplices (Chrime/Gfail/Schemes/Extort)
 
 ## Cross-cutting — the family
-44. [ ] "Fraude family" cross-links in all three READMEs
+44. [x] "Fraude family" cross-links in all three READMEs
 45. [ ] A family meta note (what each repo is)
 46. [x] chrime repo set up, v0 shipped, pushed
 47. [x] Fraude family branding on chrime (headed footer + README)
@@ -67,4 +67,4 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 ## Capture / governance
 48. [x] Chrime telos registered (`ns_46cf50bfa273`) + charter committed
 49. [x] ADR 0001: engine substrate = Servo
-50. [ ] Devlog/brief in cockpit summarizing the ecosystem build
+50. [x] Devlog/brief in cockpit summarizing the ecosystem build
