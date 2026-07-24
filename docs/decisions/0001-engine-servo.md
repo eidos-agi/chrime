@@ -46,9 +46,20 @@ Rust-native and parallel-by-design.
   walks Servo's live DOM directly (no JS round-trip); `settle` uses Servo's own load/quiescence
   signals for the deterministic settle the telos requires.
 
+## Build status (2026-07-24): UNBLOCKED
+
+Servo builds here. The wall was an upstream packaging bug: **crates.io `servo 0.4.0`
+exact-pins `p256/p384/p521 = "=0.14.0-rc.14"`**, a broken RustCrypto release-candidate whose
+`WnafSize` impl doesn't match the `primefield`/`elliptic-curve` finals that resolve alongside
+it (`error[E0277]: the trait bound Scalar: WnafSize is not satisfied`). The `=` pin makes it
+un-bumpable under that release. **Fix: depend on git Servo** (`rev = aa297ce5`), which uses
+`p* 0.14.0` final. Full build — including `mozjs`/SpiderMonkey — completes in ~7m on rust
+**1.88** (468 crates, 0 errors). Pin the rev; git main moves and could re-break. Revisit when
+a fixed crates.io release ships.
+
 ## Next
 
-1. Confirm Servo builds on this toolchain (background build kicked off with this ADR).
+1. ~~Confirm Servo builds~~ ✓ (see above).
 2. `ServoEngine` skeleton behind the trait, mapped to the WebView delegate.
 3. DOM snapshot from Servo's live tree; deterministic settle; then `auth-session` (cookies)
    → the `gmail-scour` acceptance test.

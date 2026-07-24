@@ -21,7 +21,7 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 15. [ ] README: full API table + examples
 
 ## Chrime — v1 (Servo) prep
-16. [~] Servo build: 619 crates compile (webrender/html5ever/cssparser); BLOCKED only on
+16. [x] Servo builds (incl. mozjs/SpiderMonkey) — fix: git servo rev aa297ce5 drops the broken RC crypto pin (crates.io 0.4.0 exact-pinned p*=0.14.0-rc.14). 468 crates, 7m11s.
        broken RC crypto `p256/p384/p521 v0.14.0-rc.14` (`Scalar: WnafSize`). Fix = version pin.
        Not toolchain, not size — a bounded dep fix.
 17. [ ] `rust-toolchain.toml` pinning 1.88 for the servo feature

@@ -13,7 +13,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # v1 engine substrate (ADR 0001): Servo, embedded in-process. Optional + feature-gated so the
 # default build stays lean (StaticEngine, ~1.9 MB) while `--features servo` pulls the real engine.
-servo = { version = "0.4", optional = true }
+# crates.io servo 0.4.0 exact-pins broken RC crypto (`p*=0.14.0-rc.14`) that won't compile.
+# git main dropped the RC (uses p* 0.14.0 final). Pin a known-good rev — main moves and could
+# re-break. Confirmed to build (incl. mozjs/SpiderMonkey) on rust 1.88. Revisit when a fixed
+# crates.io release ships.
+servo = { git = "https://github.com/servo/servo", rev = "aa297ce5", optional = true }
 
 [features]
 servo = ["dep:servo"]
