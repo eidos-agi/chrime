@@ -1,0 +1,18 @@
+[package]
+name = "chrime"
+version = "0.1.0"
+edition = "2021"
+description = "A browser built for AI agents: no GUI, no pixels — the DOM is the interface, driven 100% by API."
+license = "MIT"
+
+[dependencies]
+ureq = "2.10"                                    # tiny sync HTTP; no async runtime, low memory
+scraper = "0.20"                                 # html5ever + selectors (Servo's real parser)
+url = "2.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"     # optimize for size — this is meant to be a lean binary
+lto = true
+strip = true
