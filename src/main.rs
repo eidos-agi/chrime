@@ -238,8 +238,19 @@ impl Engine for StaticEngine {
 fn interesting(tag: &str) -> bool {
     matches!(
         tag,
-        "a" | "button" | "input" | "textarea" | "select" | "h1" | "h2" | "h3" | "h4" | "h5"
-            | "h6" | "p" | "li" | "label"
+        "a" | "button"
+            | "input"
+            | "textarea"
+            | "select"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "p"
+            | "li"
+            | "label"
     )
 }
 
@@ -262,7 +273,10 @@ fn collapse(s: &str) -> String {
 
 fn resolve(base: Option<&Url>, href: &str) -> String {
     match base {
-        Some(b) => b.join(href).map(|u| u.to_string()).unwrap_or_else(|_| href.to_string()),
+        Some(b) => b
+            .join(href)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| href.to_string()),
         None => href.to_string(),
     }
 }
@@ -375,7 +389,11 @@ fn render(eng: &dyn Engine) -> Vec<u32> {
                 println!(
                     "\x1b[38;5;214m[{}]\x1b[0m {}",
                     clickmap.len(),
-                    if n.text.is_empty() { "(no text)" } else { &n.text }
+                    if n.text.is_empty() {
+                        "(no text)"
+                    } else {
+                        &n.text
+                    }
                 );
             }
             "field" => println!(
@@ -390,9 +408,7 @@ fn render(eng: &dyn Engine) -> Vec<u32> {
         }
     }
     println!("\n\x1b[38;5;238m{}\x1b[0m", rule);
-    println!(
-        "\x1b[38;5;244m URL to go · number to open a link · b back · r read · q quit\x1b[0m"
-    );
+    println!("\x1b[38;5;244m URL to go · number to open a link · b back · r read · q quit\x1b[0m");
     println!(
         "\x1b[38;5;240m 🎭 a member of the Fraude family — the fraud that does real work\x1b[0m"
     );
@@ -523,7 +539,9 @@ mod tests {
         e.url = Some(Url::parse("https://ex.com/").unwrap());
         let (nodes, title) = e.walk();
         assert_eq!(title.as_deref(), Some("T"));
-        assert!(nodes.iter().any(|n| n.role == "heading" && n.text == "Head"));
+        assert!(nodes
+            .iter()
+            .any(|n| n.role == "heading" && n.text == "Head"));
         let link = nodes.iter().find(|n| n.role == "link").unwrap();
         assert_eq!(link.href.as_deref(), Some("https://ex.com/x"));
         assert!(link.clickable);

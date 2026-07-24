@@ -33,9 +33,9 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 
 ## Chrime — quality
 23. [ ] GitHub Actions CI: build + test on push
-24. [ ] `cargo clippy` clean
-25. [ ] `cargo fmt` clean
-26. [ ] LICENSE (MIT for our code; Servo stays MPL in its own files)
+24. [x] `cargo clippy` clean
+25. [x] `cargo fmt` clean
+26. [x] LICENSE (MIT for our code; Servo stays MPL in its own files)
 27. [ ] CHANGELOG.md
 
 ## Fraude OS — complete the suite
