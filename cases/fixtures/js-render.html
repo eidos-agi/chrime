@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head><title>pre-js shell</title></head>
+<body>
+<h1>SHELL ONLY</h1>
+<div id="app"></div>
+<script>
+  // Everything below exists only after JS runs. StaticEngine must NOT see it;
+  // a faithful-js engine must.
+  document.title = "post-js title";
+  var app = document.getElementById("app");
+  var h = document.createElement("h2");
+  h.textContent = "POST-JS-MARKER";
+  app.appendChild(h);
+  var p = document.createElement("p");
+  p.textContent = "rendered by javascript at runtime";
+  app.appendChild(p);
+  var b = document.createElement("button");
+  b.id = "grow";
+  b.textContent = "GROW";
+  b.onclick = function () {
+    var n = document.createElement("p");
+    n.textContent = "CLICK-HANDLER-RAN";
+    document.body.appendChild(n);
+  };
+  document.body.appendChild(b);
+  var a = document.createElement("a");
+  a.href = "https://example.com/post-js-link";
+  a.textContent = "POST-JS-LINK";
+  document.body.appendChild(a);
+</script>
+</body>
+</html>

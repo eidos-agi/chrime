@@ -1,9 +1,9 @@
 id: "ns_46cf50bfa273"
 project_id: "418d91f4-6613-4aa6-9481-b827630afbe0"
-goal: "Build Chrime: a browser an AI agent controls at every layer by owning the engine, not puppeteering a human browser through a debug port. Total, deterministic, fine-grained agent control; acceptance is an agent scouring real authenticated Gmail through the API alone."
+goal: "Build Chrime: a browser an AI agent controls at every layer by owning the engine, not puppeteering a human browser through a debug port. Total, deterministic, fine-grained agent control via a complete JSON API (zero human clicks); lean default deps; multi-view single-buffer pages; Knox credentials without secret leakage; optional GUI observation only. Acceptance is an agent scouring real authenticated Gmail through the API alone."
 metric: "pct_requirements_green"
 metric_kind: "percent"
-charter_hash: "bcf5682e7d067d0c"
+charter_hash: "e2abe06ee7a50d21"
 serves_parent: "root"
 stop_max_iters: 500
 stop_zero_delta_n: 25

@@ -1,1 +1,6 @@
 /target
+logs/
+
+# supervision artifacts (not part of the product)
+BOSS-STATUS.md
+scripts/watch-boss.sh

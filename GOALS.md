@@ -1,7 +1,9 @@
-# 50 Goals — Chrime + the Fraude family
+# Goals — Chrime + the Fraude family
 
-Autonomous push, 2026-07-24. `[x]` met · `[ ]` open · `[~]` in progress/blocked. Goals serve
+Autonomous push. `[x]` met · `[ ]` open · `[~]` in progress/blocked. Goals serve
 the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
+
+**Telos / requirements:** `TELOS.md`, `REQUIREMENTS.md` (source of truth for musts).
 
 ## Chrime — v0 engine & API (pure Rust, no Servo)
 1. [x] `navigate` + `snapshot` return semantic DOM with stable node-ids (dom-snapshot-api)
@@ -15,10 +17,26 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 9. [x] Unit test: `walk()`/snapshot on a fixed HTML fixture (roles + ids)
 10. [ ] Integration test: pipe an API script, assert JSON results
 11. [ ] Graceful non-HTML handling (content-type aware)
-12. [ ] Expose `back`/`forward` in the API `handle`
+12. [x] Expose `back` in the API (forward still open)
 13. [ ] Headed: show node-id beside each line (headed + API share addressing)
 14. [ ] Request timeout config + document
-15. [ ] README: full API table + examples
+15. [x] README: API table + views + Knox + dependency policy
+
+## Chrime — product surface (2026-07-25) → TELOS
+51. [x] Full JSONL API (`--api` / `--listen`) — zero human clicks (api-complete-control)
+52. [x] Page views: full/outline/links/fields/clickables/text/compact/meta (page-views, single-buffer-views)
+53. [x] AI visibility Set-of-Marks on live clickables (ai-visibility-marks)
+54. [x] Knox find/fill/use; secrets never surface (knox-credentials, secrets-never-surface)
+55. [x] Dual-pane GUI is the **default** build (co-surf; dual-pane-gui-default)
+56. [x] No feature pop-ups; suppress web modals (no-feature-popups, no-web-modals)
+57. [x] Square buttons only (square-buttons)
+58. [x] Lean headless still available via `--no-default-features` (lean-optional-core)
+59. [x] Memory: one HTML buffer + ephemeral views; ~2 MB lean binary (memory-efficiency)
+60. [x] TELOS + REQUIREMENTS.md updated with all of the above
+61. [x] ≥100 plain-English API tests + runner + bug log (`cases/`, `scripts/run_api_suite.py`)
+62. [x] Hierarchical breadcrumbs on every event (`docs/BREADCRUMBS.md`, `logs/trace.jsonl`)
+63. [x] Session save + shim restore (`session_save` / `session_load`)
+64. [x] Native Hancock permission requests (`hancock_request` / wait / pending)
 
 ## Chrime — v1 (Servo) prep
 16. [x] Servo builds (incl. mozjs/SpiderMonkey) — fix: git servo rev aa297ce5 drops the broken RC crypto pin (crates.io 0.4.0 exact-pinned p*=0.14.0-rc.14). 468 crates, 7m11s.
@@ -68,3 +86,15 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 48. [x] Chrime telos registered (`ns_46cf50bfa273`) + charter committed
 49. [x] ADR 0001: engine substrate = Servo
 50. [x] Devlog/brief in cockpit summarizing the ecosystem build
+
+## v1 engine — Servo depth (2026-07-25)
+51. [x] `cargo build --release --features servo` green on this machine (7m13s, rustc 1.96)
+52. [x] `ServoEngine` completes the `Engine` trait (settle, html_bytes, export/import page)
+53. [x] `settle` API op + `SettleReceipt` (spins/ms/quiescent) — deterministic settle, not a sleep
+54. [x] faithful-js green: post-JS DOM, JS-created nodes, JS click handlers (cases 122-127)
+55. [x] auth-session green in-process: cookies carried across navigations (case 128)
+56. [x] Suite runner `--engine` flag, servo/static-only tag skipping, fixture web server
+57. [x] `docs/servo-integration.md` — Engine ↔ libservo mapping + the two engine traps
+58. [ ] Cookie jar persisted to disk (auth-session across processes)
+59. [ ] Interception + render-tree/computed-layout ops (rest of control-surfaces)
+60. [ ] Determinism case: double navigate+settle+snapshot equality

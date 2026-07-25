@@ -10,33 +10,63 @@
 //! `Engine` trait and drop in behind the identical API — that seam is the whole point.
 
 use scraper::{ElementRef, Html, Node, Selector};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
 use url::{form_urlencoded, Url};
+
+mod api;
+mod hancock;
+mod knox;
+mod session_store;
+mod trace;
+mod views;
+
+#[cfg(feature = "gui")]
+mod gui;
+
+#[cfg(feature = "servo")]
+mod servo_engine;
+
+pub(crate) use views::ViewKind;
 
 const UA: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrime/0.1 (a browser for agents)";
 
 // ---- the DOM, as an agent sees it ----
 
-#[derive(Serialize)]
-struct DomNode {
+#[derive(Serialize, Deserialize)]
+pub(crate) struct DomNode {
     node_id: u32,
     tag: String,
     role: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     href: Option<String>,
     clickable: bool,
 }
 
-#[derive(Serialize)]
-struct DomSnapshot {
+#[derive(Serialize, Deserialize)]
+pub(crate) struct DomSnapshot {
+    /// Which projection this is (`full`, `outline`, `links`, …). Same page, different lens.
+    #[serde(default = "default_view_name")]
+    view: String,
+    #[serde(default)]
     url: Option<String>,
+    #[serde(default)]
     title: Option<String>,
     node_count: usize,
+    /// Bytes of the single stored HTML buffer (not duplicated per view).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    html_bytes: Option<usize>,
+    /// Role histogram — Meta view is this without `nodes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    counts: Option<std::collections::BTreeMap<String, usize>>,
     nodes: Vec<DomNode>,
+}
+
+fn default_view_name() -> String {
+    "full".into()
 }
 
 #[derive(Serialize)]
@@ -51,9 +81,45 @@ struct NavResult {
     error: Option<String>,
 }
 
+/// What `settle` returns: proof the engine was driven to quiescence, not slept on.
+/// `spins` is how many event-loop turns it took; a heuristic sleep cannot report that.
+#[derive(Serialize)]
+pub(crate) struct SettleReceipt {
+    ok: bool,
+    engine: &'static str,
+    /// Event-loop turns pumped before quiescence (0 = already settled / nothing to pump).
+    spins: u32,
+    ms: u64,
+    /// True when quiescence was reached; false when the safety cap tripped first.
+    quiescent: bool,
+    /// Engine-specific signal that ended the spin (`load_complete`, `cap`, `no_js`).
+    reason: &'static str,
+    url: Option<String>,
+}
+
 // ---- the swappable engine seam (StaticEngine now; a v8 engine implements this next) ----
 
-trait Engine {
+pub(crate) trait Engine {
+    /// Which substrate is behind the trait — agents branch on it, and it keeps "which engine
+    /// answered?" out of guesswork in suite reports.
+    fn engine_name(&self) -> &'static str {
+        "static"
+    }
+    /// Drive the engine to quiescence and return a receipt. Deterministic settle is the whole
+    /// point (telos `control-surfaces`): the answer is a measured state, never a sleep.
+    fn settle(&mut self) -> SettleReceipt {
+        SettleReceipt {
+            ok: true,
+            engine: self.engine_name(),
+            spins: 0,
+            ms: 0,
+            quiescent: true,
+            // ponytail: a fetched-and-parsed static page has no clock to settle — it is
+            // quiescent by construction. Real spins only exist once JS does.
+            reason: "no_js",
+            url: self.current_url(),
+        }
+    }
     fn navigate(&mut self, url: &str) -> NavResult;
     fn snapshot(&self) -> DomSnapshot;
     fn read_text(&self) -> String;
@@ -63,9 +129,30 @@ trait Engine {
     fn links(&self) -> Vec<DomNode>;
     /// Nodes whose text contains `q` (case-insensitive) — how an agent finds "the login button".
     fn find_text(&self, q: &str) -> Vec<DomNode>;
+    /// Size of the single stored HTML buffer (0 if unknown). Views never duplicate this.
+    fn html_bytes(&self) -> usize {
+        0
+    }
+    /// Named view of the *same* page — projection only, no second page store.
+    fn view(&self, kind: ViewKind) -> DomSnapshot {
+        views::project(self.snapshot(), kind, self.html_bytes())
+    }
+    /// Export the single HTML buffer + url/title for session save.
+    fn export_page(&self) -> session_store::SavedPage {
+        session_store::SavedPage {
+            url: self.current_url(),
+            title: self.snapshot().title,
+            html: String::new(),
+        }
+    }
+    /// Shim a saved page buffer into this engine (no network).
+    fn import_page(&mut self, page: &session_store::SavedPage) -> Result<(), String> {
+        let _ = page;
+        Err("import_page not supported on this engine".into())
+    }
 }
 
-struct StaticEngine {
+pub(crate) struct StaticEngine {
     url: Option<Url>,
     html: String,
     title: Option<String>,
@@ -73,7 +160,7 @@ struct StaticEngine {
 }
 
 impl StaticEngine {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         StaticEngine {
             url: None,
             html: String::new(),
@@ -96,11 +183,14 @@ impl StaticEngine {
                 _ => continue,
             };
             let tag = el.name().to_string();
+            // Document <title> only — SVG <title> (e.g. "Close icon") must not overwrite it.
             if tag == "title" {
-                if let Some(er) = ElementRef::wrap(node) {
-                    let t = collapse(&er.text().collect::<String>());
-                    if !t.is_empty() {
-                        title = Some(t);
+                if title.is_none() {
+                    if let Some(er) = ElementRef::wrap(node) {
+                        let t = collapse(&er.text().collect::<String>());
+                        if !t.is_empty() {
+                            title = Some(t);
+                        }
                     }
                 }
                 continue;
@@ -143,6 +233,35 @@ impl Engine for StaticEngine {
                 }
             }
         };
+        // file:// — read the raw HTML directly (StaticEngine sees the pre-JS shell, no scripts run).
+        if target.scheme() == "file" {
+            return match target
+                .to_file_path()
+                .ok()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+            {
+                Some(html) => {
+                    self.html = html;
+                    self.url = Some(target.clone());
+                    let (_, title) = self.walk();
+                    self.title = title.clone();
+                    NavResult {
+                        ok: true,
+                        url: Some(target.to_string()),
+                        status: Some(200),
+                        title,
+                        error: None,
+                    }
+                }
+                None => NavResult {
+                    ok: false,
+                    url: Some(target.to_string()),
+                    status: None,
+                    title: None,
+                    error: Some("could not read local file".into()),
+                },
+            };
+        }
         match self.agent.get(target.as_str()).set("User-Agent", UA).call() {
             Ok(resp) => {
                 let status = resp.status();
@@ -171,20 +290,68 @@ impl Engine for StaticEngine {
     fn snapshot(&self) -> DomSnapshot {
         let (nodes, title) = self.walk();
         DomSnapshot {
+            view: "full".into(),
             url: self.current_url(),
             title,
             node_count: nodes.len(),
+            html_bytes: Some(self.html.len()),
+            counts: None,
             nodes,
         }
+    }
+
+    fn html_bytes(&self) -> usize {
+        self.html.len()
+    }
+
+    fn export_page(&self) -> session_store::SavedPage {
+        session_store::SavedPage {
+            url: self.current_url(),
+            title: self.title.clone(),
+            html: self.html.clone(),
+        }
+    }
+
+    fn import_page(&mut self, page: &session_store::SavedPage) -> Result<(), String> {
+        self.html = page.html.clone();
+        self.title = page.title.clone();
+        self.url = match page.url.as_deref() {
+            Some(u) if !u.is_empty() => {
+                Some(Url::parse(u).map_err(|e| format!("bad saved url: {e}"))?)
+            }
+            _ => None,
+        };
+        // Re-derive title from HTML if missing
+        if self.title.is_none() {
+            let (_, t) = self.walk();
+            self.title = t;
+        }
+        Ok(())
     }
 
     fn read_text(&self) -> String {
         let doc = Html::parse_document(&self.html);
         let sel = Selector::parse("body").unwrap();
-        match doc.select(&sel).next() {
-            Some(body) => collapse(&body.text().collect::<String>()),
-            None => collapse(&doc.root_element().text().collect::<String>()),
+        let root = match doc.select(&sel).next() {
+            Some(body) => body,
+            None => doc.root_element(),
+        };
+        let mut out = String::new();
+        for node in root.descendants() {
+            let Node::Text(t) = node.value() else {
+                continue;
+            };
+            // Script and style bodies are source, not page text — a browser's innerText skips
+            // them. Without this the static engine "reads" strings from JS it never ran, which
+            // reads exactly like faithful-js support it does not have.
+            let in_code = node.ancestors().any(|a| {
+                matches!(a.value(), Node::Element(e) if e.name() == "script" || e.name() == "style")
+            });
+            if !in_code {
+                out.push_str(t);
+            }
         }
+        collapse(&out)
     }
 
     fn click(&mut self, node_id: u32) -> NavResult {
@@ -281,10 +448,13 @@ fn resolve(base: Option<&Url>, href: &str) -> String {
     }
 }
 
-fn normalize(raw: &str, base: Option<&Url>) -> Result<Url, String> {
+pub(crate) fn normalize(raw: &str, base: Option<&Url>) -> Result<Url, String> {
     let s = raw.trim();
+    if s.is_empty() {
+        return Err("empty url".into());
+    }
     if let Ok(u) = Url::parse(s) {
-        if u.scheme() == "http" || u.scheme() == "https" {
+        if matches!(u.scheme(), "http" | "https" | "file" | "data" | "about") {
             return Ok(u);
         }
     }
@@ -302,40 +472,7 @@ fn normalize(raw: &str, base: Option<&Url>) -> Result<Url, String> {
     Url::parse(&format!("https://duckduckgo.com/html/?q={}", q)).map_err(|e| e.to_string())
 }
 
-// ---- 100%-API surface: JSON commands in, JSON results out ----
-
-fn handle(eng: &mut dyn Engine, line: &str) -> String {
-    let v: serde_json::Value = match serde_json::from_str(line) {
-        Ok(v) => v,
-        Err(e) => return err("bad_json", &format!("bad json: {}", e)),
-    };
-    match v.get("op").and_then(|o| o.as_str()).unwrap_or("") {
-        "navigate" => {
-            let url = v.get("url").and_then(|u| u.as_str()).unwrap_or("");
-            serde_json::to_string(&eng.navigate(url)).unwrap()
-        }
-        "snapshot" => serde_json::to_string(&eng.snapshot()).unwrap(),
-        "read" => serde_json::json!({ "text": eng.read_text() }).to_string(),
-        "links" => serde_json::to_string(&eng.links()).unwrap(),
-        "find_text" => {
-            let q = v.get("text").and_then(|t| t.as_str()).unwrap_or("");
-            serde_json::to_string(&eng.find_text(q)).unwrap()
-        }
-        "click" => {
-            let id = v.get("node_id").and_then(|n| n.as_u64()).unwrap_or(0) as u32;
-            serde_json::to_string(&eng.click(id)).unwrap()
-        }
-        "current" => serde_json::json!({ "url": eng.current_url() }).to_string(),
-        "quit" => std::process::exit(0),
-        other => err("unknown_op", &format!("unknown op '{}'", other)),
-    }
-}
-
-fn err(code: &str, msg: &str) -> String {
-    serde_json::json!({ "ok": false, "code": code, "error": msg }).to_string()
-}
-
-// ---- the HEAD: a terminal render of the semantic DOM (default when a human runs chrime) ----
+// ---- the HEAD: a terminal render of the semantic DOM (`--tui`) ----
 
 fn term_width() -> usize {
     std::env::var("COLUMNS")
@@ -471,37 +608,100 @@ fn headed(eng: &mut dyn Engine, start: Option<String>) {
     }
 }
 
-fn run_api(eng: &mut dyn Engine) {
-    let stdin = std::io::stdin();
-    let mut out = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        writeln!(out, "{}", handle(eng, line)).ok();
-        out.flush().ok();
-    }
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-v") {
         println!("chrime {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    // Headed by default. Agents opt into the raw JSON API with --api (alias --headless).
+    // Breadcrumb root for this process (docs/BREADCRUMBS.md). Always first log line.
+    crate::trace::run_start();
+    // Default build includes GUI (co-surf with a human). Use --api / --tui to skip the window.
+    // Lean binary: cargo build --release --no-default-features
     let api = args.iter().any(|a| a == "--api" || a == "--headless");
-    let start = args.iter().find(|a| !a.starts_with("--")).cloned();
-    let mut eng = StaticEngine::new();
+    let tui = args.iter().any(|a| a == "--tui" || a == "--terminal");
+    let want_gui = args.iter().any(|a| a == "--gui");
+    let mut engine = String::from("static");
+    let mut start: Option<String> = None;
+    let mut listen: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--engine" => {
+                if let Some(v) = it.next() {
+                    engine = v.clone();
+                }
+            }
+            "--listen" => {
+                if let Some(v) = it.next() {
+                    if v == "off" || v == "none" || v == "-" {
+                        listen = None;
+                    } else {
+                        listen = Some(v.clone());
+                    }
+                }
+            }
+            "--no-listen" => listen = None,
+            s if s.starts_with("--") => {}
+            s => {
+                if start.is_none() {
+                    start = Some(s.to_string());
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "gui"))]
+    if want_gui {
+        eprintln!(
+            "chrime: this binary was built without GUI (--no-default-features).\n\
+             Default co-surf build: cargo build --release\n\
+             Or use: chrime --api  |  chrime --tui <url>"
+        );
+        std::process::exit(2);
+    }
+
+    #[cfg(feature = "gui")]
+    {
+        // Default: dual-pane window (human helps AI surf). Opt out with --api or --tui.
+        if want_gui || (!api && !tui) {
+            let addr = listen.clone().or_else(|| Some("127.0.0.1:7420".into()));
+            if let Err(e) = gui::run(start, addr) {
+                eprintln!("chrime gui: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
+
+    let mut eng: Box<dyn Engine> = match engine.as_str() {
+        #[cfg(feature = "servo")]
+        "servo" => Box::new(servo_engine::ServoEngine::new()),
+        #[cfg(not(feature = "servo"))]
+        "servo" => {
+            eprintln!("chrime: built without the `servo` engine — rebuild with `--features servo`");
+            std::process::exit(2);
+        }
+        _ => Box::new(StaticEngine::new()),
+    };
+
+    if let Some(u) = start.as_ref() {
+        let _ = eng.navigate(u);
+    }
+
     if api {
-        run_api(&mut eng);
+        if let Some(addr) = listen {
+            if let Err(e) = api::run_tcp_headless(&addr, eng.as_mut()) {
+                eprintln!("chrime api: {e}");
+                std::process::exit(1);
+            }
+        } else {
+            api::run_stdio(eng.as_mut());
+        }
     } else {
-        headed(&mut eng, start);
+        // --tui, or default lean path without gui feature
+        let _ = tui; // accepted flag; headed TUI is the lean interactive surface
+        headed(eng.as_mut(), start);
     }
 }
 

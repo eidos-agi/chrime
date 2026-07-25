@@ -1,10 +1,47 @@
 # Chrime — design
 
-**A browser built for AI agents, not humans.** No GUI, no pixel pipeline by default. The
-interface is an API; what it exposes is the DOM as a compact semantic tree with stable
-node-ids — the thing an agent's decision loop needs. Existing automation tools are bad at
-agent control because they puppeteer a *human* browser (pixels, coordinates, flaky
-human-oriented selectors). Chrime inverts that: the machine-native surface is primary.
+**A browser built for AI agents — with a human co-surf surface by default.** The primary
+control path is still the JSON API (semantic DOM, stable node-ids). The **default binary**
+opens a dual-pane GUI so you can help the agent when surfing gets hard (auth walls, captchas,
+judgment calls). Existing automation tools puppeteer a human browser through CDP; Chrime
+inverts that: agent-native API first, optional human eyes on a real render.
+
+**Normative requirements and telos:** see `TELOS.md` and `REQUIREMENTS.md` (north star
+`ns_46cf50bfa273`). This file is design rationale only.
+
+## Default = GUI co-surf; lean is opt-in
+
+| Build | Role |
+|-------|------|
+| **Default** (`cargo build --release`) | Dual-pane GUI + API on `:7420` — human helps AI surf |
+| **Lean** (`--no-default-features`) | ureq + scraper + serde only — CI / pure agent pipe |
+| **Servo** (`--features servo`) | Full JS engine — heavy, optional |
+
+```sh
+cargo build --release                        # DEFAULT: GUI
+cargo build --release --no-default-features  # lean headless
+```
+
+## Square buttons only
+
+Chrime chrome controls are **square** (`border-radius: 0`). Never use rounded pills
+or soft corners on buttons, view tabs, or AI-vis mark badges. Inputs may differ;
+buttons do not.
+
+## No pop-ups for features
+
+A feature that only changes behind a dialog a human must navigate is a broken feature for
+agents (and for this product). Rules:
+
+1. **Chrime features** (AI visibility, Knox find/fill, read mode, engine choice) are
+   one-shot: always-visible chrome controls and/or JSON ops. Never a settings modal, never
+   a multi-step wizard to flip a boolean.
+2. **Web-originated modals** that block the loop are suppressed: `alert`/`confirm`/`prompt`,
+   `window.open` (same-tab or deny), `target=_blank` (main pane), download save dialogs
+   (denied).
+3. **Exception:** OS-level Knox Touch ID unlocks *secrets*. That is Knox's security
+   boundary, not a Chrime feature switch. Chrime must not invent its own modal to change
+   product behavior.
 
 ## The load-bearing decision: snapshot, not live
 
@@ -30,6 +67,15 @@ Consequences:
   runaway timers ⇒ a deterministic settled DOM. Kills timing flakiness.
 - **Memory is peak, not sustained.** Between snapshots nothing runs; a tab serializes to its
   DOM and goes dormant, rehydrating on demand. Thousands of tabs where Chromium holds tens.
+
+## Views (many lenses, one buffer)
+
+A page is stored **once** (raw HTML + url/title). "Views" are named projections of that
+single buffer — outline, links, fields, clickables, text, compact, meta — produced on
+demand and discarded. Switching views costs a re-walk, not a second copy of the page.
+Node-ids are stable across views (same walk order), so `click` still works after an agent
+moves from `outline` to `links`. The Meta view returns only role counts + `html_bytes`
+(empty `nodes`), so introspection is near-zero RAM beyond the HTML itself.
 
 ## Can an agent "see" without pixels?
 

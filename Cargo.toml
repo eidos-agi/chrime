@@ -2,27 +2,42 @@
 name = "chrime"
 version = "0.1.0"
 edition = "2021"
-description = "A browser built for AI agents: no GUI, no pixels — the DOM is the interface, driven 100% by API."
+description = "A browser built for AI agents: dual-pane GUI by default (human+AI co-surf), full JSON API, lean core optional."
 license = "MIT"
 
+# ---------------------------------------------------------------------------
+# Default = GUI (dual-pane). Most real work needs a human in the loop to help
+# the agent surf; the window is the co-browsing surface. API still drives 100%.
+#
+# Lean headless (no wry/winit):
+#   cargo build --release --no-default-features
+#
+# Full JS engine (heavy):
+#   cargo build --release --features servo
+# ---------------------------------------------------------------------------
+
 [dependencies]
-ureq = "2.10"                                    # tiny sync HTTP; no async runtime, low memory
-scraper = "0.20"                                 # html5ever + selectors (Servo's real parser)
+ureq = "2.10"                                    # tiny sync HTTP; no async runtime
+scraper = "0.20"                                 # html5ever + selectors (page walk)
 url = "2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# v1 engine substrate (ADR 0001): Servo, embedded in-process. Optional + feature-gated so the
-# default build stays lean (StaticEngine, ~1.9 MB) while `--features servo` pulls the real engine.
-# crates.io servo 0.4.0 exact-pins broken RC crypto (`p*=0.14.0-rc.14`) that won't compile.
-# git main dropped the RC (uses p* 0.14.0 final). Pin a known-good rev — main moves and could
-# re-break. Confirmed to build (incl. mozjs/SpiderMonkey) on rust 1.88. Revisit when a fixed
-# crates.io release ships.
+
+# Desktop shell (WebKit dual-pane) — default feature
+wry = { version = "0.55", optional = true }
+winit = { version = "0.30", optional = true }
+
+# Optional v1 engine (ADR 0001)
 servo = { git = "https://github.com/servo/servo", rev = "aa297ce5", optional = true }
+dpi = { version = "=0.1.2", optional = true }
+rustls = { version = "0.23", features = ["ring"], optional = true }
 
 [features]
-servo = ["dep:servo"]
+default = ["gui"]
+gui = ["dep:wry", "dep:winit"]
+servo = ["dep:servo", "dep:dpi", "dep:rustls"]
 
 [profile.release]
-opt-level = "z"     # optimize for size — this is meant to be a lean binary
+opt-level = "z"
 lto = true
 strip = true
