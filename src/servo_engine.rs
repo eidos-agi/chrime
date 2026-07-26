@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
 use servo::{
-    EventLoopWaker, JSValue, JavaScriptEvaluationError, LoadStatus, Preferences, RenderingContext,
-    Servo, ServoBuilder, SoftwareRenderingContext, WebView, WebViewBuilder, WebViewDelegate,
+    EventLoopWaker, JSValue, JavaScriptEvaluationError, LoadStatus, Opts, Preferences,
+    RenderingContext, Servo, ServoBuilder, SoftwareRenderingContext, WebView, WebViewBuilder,
+    WebViewDelegate,
 };
 use url::Url;
 
@@ -21,6 +22,18 @@ use crate::{normalize, session_store, DomNode, DomSnapshot, Engine, NavResult, S
 // Safety cap on the settle spin. A settle that hits this is reported `quiescent: false` —
 // we never pretend a timeout was quiescence.
 const SPIN_CAP: u32 = 30_000;
+
+/// Where the cookie jar lives between runs. `CHRIME_PROFILE_DIR` overrides it (the suite gives
+/// each run its own, so a stale jar can never make a persistence test pass).
+///
+/// It holds live session cookies — treat it like a credential store, never commit it.
+/// Default is under `logs/`, which is git-ignored.
+pub(crate) fn profile_dir() -> std::path::PathBuf {
+    let dir = std::env::var("CHRIME_PROFILE_DIR").unwrap_or_else(|_| "logs/profile".into());
+    let p = std::path::PathBuf::from(dir);
+    let _ = std::fs::create_dir_all(&p);
+    p
+}
 
 // Runs in the real page after JS, so it sees rendered content StaticEngine never could.
 // Emits StaticEngine's exact schema so both engines are interchangeable behind the API.
@@ -104,7 +117,16 @@ impl ServoEngine {
         preferences.network_http_proxy_uri = String::new();
         preferences.network_https_proxy_uri = String::new();
 
+        // The profile dir IS the session that survives a restart: Servo reads `cookie_jar.json`
+        // (plus hsts/auth caches) from it at startup and writes them back when the resource
+        // thread exits. Without it every process starts logged out.
+        let opts = Opts {
+            config_dir: Some(profile_dir()),
+            ..Default::default()
+        };
+
         let servo = ServoBuilder::default()
+            .opts(opts)
             .preferences(preferences)
             .event_loop_waker(Box::new(Waker(Arc::new(AtomicBool::new(false)))))
             .build();
@@ -190,6 +212,10 @@ impl ServoEngine {
 impl Engine for ServoEngine {
     fn engine_name(&self) -> &'static str {
         "servo"
+    }
+
+    fn profile_dir(&self) -> Option<String> {
+        Some(profile_dir().display().to_string())
     }
 
     // The real settle: if a load is in flight, pump the engine's own event loop until IT says

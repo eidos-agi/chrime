@@ -120,6 +120,11 @@ pub(crate) trait Engine {
             url: self.current_url(),
         }
     }
+    /// Where this engine keeps state that outlives the process (cookie jar); None if it keeps
+    /// none. Reported by `status` so "why did I start logged out?" is answerable.
+    fn profile_dir(&self) -> Option<String> {
+        None
+    }
     fn navigate(&mut self, url: &str) -> NavResult;
     fn snapshot(&self) -> DomSnapshot;
     fn read_text(&self) -> String;

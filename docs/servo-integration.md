@@ -35,7 +35,7 @@ cargo check  --features servo              # fast loop (~90s warm)
 | `links` / `find_text` | filters over `snapshot()` (same projection rules as StaticEngine) |
 | `html_bytes` / `export_page` | `document.documentElement.outerHTML` — the serialized post-JS document is the single buffer |
 | `import_page` | writes the saved buffer to a temp file and `WebView::load`s it as `file://` (no network); `current_url` reports the *saved* url, not the scratch path |
-| cookies | Servo's own resource/cookie store, per `Servo` instance — nothing in Chrime touches it |
+| cookies | Servo's own resource/cookie store, persisted to `Opts::config_dir` (see below) |
 
 ### Why JS-evaluated walk, not a direct DOM walk
 
@@ -45,6 +45,26 @@ debug port, and the agent never touches pixels or coordinates (telos `own-the-en
 `agent-native-interface`). A direct Rust-side walk of Servo's DOM would avoid the JS round trip
 entirely; that is a performance refinement, not a control-model change, and it needs Servo's
 `script` internals exposed across the crate boundary. Filed as a gap below, not a blocker.
+
+### The cookie jar (auth-session across processes)
+
+`ServoEngine::new` sets `Opts { config_dir: Some(profile_dir()), .. }`. Servo's resource thread
+reads `cookie_jar.json` (plus `hsts_list.json` / `auth_cache.json`) from that directory at
+startup and writes them back when it exits — so the login survives a restart.
+
+- Location: `$CHRIME_PROFILE_DIR`, default `logs/profile` (git-ignored). **It holds live session
+  cookies — treat it as a credential store; never commit it and never paste it.** `status`
+  reports `profile_dir` so "why did I start logged out?" is answerable.
+- **The write only happens on a clean shutdown.** Servo flushes when `ServoInner` drops, which
+  sends `Exit` to the constellation and spins until shutdown finishes. That is why
+  `{"op":"quit","force":true}` no longer calls `process::exit` — it sets `session.quit`, the
+  loop breaks, `main` returns, and the engine drops. `SIGKILL` still loses the jar; nothing can
+  be done about that from inside the process.
+- Session cookies (no `Max-Age`/`Expires`) are *supposed* to die with the process, so the
+  fixture sets `Max-Age=3600` — otherwise the test would be asserting the wrong thing.
+- The suite gives every run its own profile dir, so a jar left by an earlier run can never make
+  a persistence case pass. Case 132 run alone fails (`LOGIN WALL`); it passes only after an
+  earlier process logged in. Case 133 is the control: same fetch, empty profile, hits the wall.
 
 ### Settle is the point
 
@@ -87,8 +107,8 @@ assert post-JS content rather than `ok: true`.
 
 ## Known gaps
 
-- **Cookie persistence to disk.** Cookies live in the `Servo` instance; a fresh process starts
-  cold. `auth-session` is only honestly green for the in-process case until a jar is persisted.
+- **A hard kill loses the jar.** Cookies are flushed on clean engine drop; `SIGKILL` or a panic
+  mid-run leaves the last session's cookies unwritten.
 - **DOM walk goes through JS.** See above — correctness is fine, the in-process boundary is
   intact, but a native walk would be faster.
 - **Interception and render-tree/computed-layout** are not exposed yet — `control-surfaces`
@@ -98,12 +118,12 @@ assert post-JS content rather than `ok: true`.
 ## Status (2026-07-25)
 
 `cargo build --release --features servo` — **green** (7m13s warm, rustc 1.96, 69 MB binary).
-Servo cases **10/10 green** (`--engine servo --tag servo`), static suite **120/120 green**
-(119 + 2 new engine cases, servo cases skipped by tag).
+Servo cases **13/13 green** (`--engine servo --tag servo`), static suite **120/120 green**
+(servo cases skipped by tag).
 
 | Telos requirement | Status after this pass |
 |---|---|
 | `faithful-js` | **green** — post-JS title, post-JS DOM nodes, JS-appended links, and JS-created click handlers all observed through the API (cases 122–127) |
-| `auth-session` | **green (in-process)** — cookie set on `/login` is carried to `/protected` across a separate navigate (case 128). Cross-process persistence is still a gap. |
+| `auth-session` | **green** — in-process across navigations (case 128) *and* across processes via the on-disk jar (cases 131/132, control 133) |
 | `control-surfaces` | **open** — settle is real and receipted (cases 119/125); synchronous interception and render-tree/computed-layout are not exposed yet |
 | `determinism` | **open** — settle exists now, but no double-run snapshot-equality case yet |

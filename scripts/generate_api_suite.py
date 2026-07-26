@@ -22,6 +22,7 @@ def case(
     *,
     tags: list | None = None,
     skip_if: str | None = None,
+    env: dict | None = None,
 ) -> dict:
     d = {
         "id": id_,
@@ -33,6 +34,8 @@ def case(
     }
     if skip_if:
         d["skip_if"] = skip_if
+    if env:
+        d["env"] = env
     return d
 
 
@@ -605,6 +608,35 @@ def main() -> None:
          {"on": 3, "path": "text", "contains": "POST-JS-MARKER"},
          {"on": 4, "path": "url", "contains": "js-render.html"}],
         tags=["servo", "session", "fixture"])
+
+    # --- auth-session across processes: the cookie jar on disk ---
+    # 131 logs in and shuts down cleanly (jar written), 132 is a *different* process that never
+    # logs in, 133 is the control: same page, empty profile, must hit the wall. 132 depends on
+    # 131 having run first — that ordering is the point of the test.
+    add(8, "Log in on the fixture site and shut the engine down cleanly so the cookie jar is written to the profile directory on disk.",
+        [{"op": "navigate", "url": "{{HTTP}}/login"},
+         {"op": "status"},
+         {"op": "quit", "force": True}],
+        [{"on": 0, "path": "ok", "eq": True},
+         {"on": 1, "path": "profile_dir", "type": "string"},
+         {"on": 2, "path": "ok", "eq": True},
+         {"on": 2, "path": "action", "eq": "quit"}],
+        tags=["servo", "auth-session", "http"])
+    add(9, "A brand-new process that never logs in still sees the protected page — the session came off disk, not from memory.",
+        [{"op": "navigate", "url": "{{HTTP}}/protected"},
+         {"op": "read"}],
+        [{"on": 0, "path": "ok", "eq": True},
+         {"on": -1, "path": "text", "contains": "LOGGED IN AS AGENT"},
+         {"on": -1, "path": "text", "not_contains": "LOGIN WALL"}],
+        tags=["servo", "auth-session", "http"])
+    add(9, "Control: the same fetch with an empty profile directory hits the login wall — proving the previous case passed because of the saved jar, not because the fixture always says yes.",
+        [{"op": "navigate", "url": "{{HTTP}}/protected"},
+         {"op": "read"}],
+        [{"on": 0, "path": "ok", "eq": True},
+         {"on": -1, "path": "text", "contains": "LOGIN WALL"},
+         {"on": -1, "path": "text", "not_contains": "LOGGED IN AS AGENT"}],
+        tags=["servo", "auth-session", "http"],
+        env={"CHRIME_PROFILE_DIR": "{{EMPTY_PROFILE}}"})
 
     # renumber
     for i, c in enumerate(cases, 1):

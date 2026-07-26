@@ -72,7 +72,14 @@ cargo build --release --no-default-features
 |-------|------|
 | **default** | GUI co-surf + core (wry/winit) — **normal product** |
 | `--no-default-features` | Lean core only (ureq, scraper, serde, url) |
-| `--features servo` | Full JS engine (heavy) |
+| `--features servo` | Full JS engine (heavy) — run it with `--engine servo` |
+
+With `--engine servo` the page's JavaScript actually runs, and the login sticks: cookies are
+kept in a profile dir (`CHRIME_PROFILE_DIR`, default `logs/profile`) and reloaded next launch,
+so a fresh process starts already authenticated. That dir holds live session cookies — treat it
+like a credential store. The jar is flushed on clean shutdown, so end a session with
+`{"op":"quit","force":true}` (or EOF) rather than killing the process. See
+`docs/servo-integration.md`.
 
 ## Fully API-driven (no clicks)
 

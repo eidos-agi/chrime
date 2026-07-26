@@ -95,6 +95,6 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 55. [x] auth-session green in-process: cookies carried across navigations (case 128)
 56. [x] Suite runner `--engine` flag, servo/static-only tag skipping, fixture web server
 57. [x] `docs/servo-integration.md` — Engine ↔ libservo mapping + the two engine traps
-58. [ ] Cookie jar persisted to disk (auth-session across processes)
+58. [x] Cookie jar persisted to disk — `$CHRIME_PROFILE_DIR` (default `logs/profile`); cases 131/132 + control 133
 59. [ ] Interception + render-tree/computed-layout ops (rest of control-surfaces)
 60. [ ] Determinism case: double navigate+settle+snapshot equality

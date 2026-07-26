@@ -37,6 +37,9 @@ pub struct Session {
     pub ai_vis: bool,
     /// Hierarchical breadcrumb session (`CHRIME.RUN.*.SESS.sNNNN`).
     pub trace: TraceSession,
+    /// Set by `quit` with force — the loop breaks so `main` can return and engines can run
+    /// their shutdown (the Servo cookie jar is only written on a clean engine drop).
+    pub quit: bool,
 }
 
 impl Session {
@@ -45,6 +48,7 @@ impl Session {
             history: Vec::new(),
             ai_vis: false,
             trace: TraceSession::new(),
+            quit: false,
         }
     }
 
@@ -137,6 +141,7 @@ fn dispatch_inner(
                 "mark_count": live.as_ref().map(|l| l.mark_count()).unwrap_or(0),
                 "trace_root": session.trace.root,
                 "run": trace::run_root(),
+                "profile_dir": eng.profile_dir(),
                 "hierarchy_doc": "docs/BREADCRUMBS.md",
             }))
         }
@@ -738,8 +743,15 @@ fn dispatch_inner(
 
         "quit" => {
             // Don't kill GUI from a TCP client by default — only stdio --api exits.
+            // Ask the loop to stop instead of exiting the process: an engine with state to
+            // flush (Servo's cookie jar) needs its Drop to run.
             if v.get("force").and_then(|f| f.as_bool()) == Some(true) {
-                std::process::exit(0);
+                session.quit = true;
+                return ok_json(serde_json::json!({
+                    "ok": true,
+                    "action": "quit",
+                    "note": "shutting down cleanly so engine state (cookie jar) is flushed"
+                }));
             }
             ok_json(serde_json::json!({
                 "ok": true,
@@ -802,6 +814,9 @@ pub fn run_stdio(eng: &mut dyn Engine) {
         let resp = dispatch(eng, &mut session, None, line);
         let _ = writeln!(out, "{resp}");
         let _ = out.flush();
+        if session.quit {
+            break;
+        }
     }
 }
 
@@ -908,6 +923,9 @@ pub fn run_tcp_headless(addr: &str, eng: &mut dyn Engine) -> Result<(), String> 
                 break;
             }
             let _ = writer.flush();
+            if session.quit {
+                return Ok(());
+            }
         }
     }
     Ok(())

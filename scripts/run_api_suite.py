@@ -40,12 +40,19 @@ FIXTURE_PORT = 7431
 
 # Extra argv for the chrime binary (e.g. --engine servo), set once in main().
 ENGINE_ARGS: list[str] = []
+# Per-run profile dir (Servo's cookie jar). A fresh one each run is what makes a
+# cross-process persistence case honest — a jar left by an earlier run cannot pass it.
+PROFILE_DIR = LOG_DIR / "suite-profile"
+EMPTY_PROFILE_DIR = LOG_DIR / "suite-profile-empty"
 
 
 def substitute(text: str) -> str:
-    """{{FIXTURES}} → local fixture dir as file://, {{HTTP}} → the fixture web server."""
-    return text.replace("{{FIXTURES}}", FIXTURES.as_uri()).replace(
-        "{{HTTP}}", f"http://127.0.0.1:{FIXTURE_PORT}"
+    """{{FIXTURES}} → fixture dir as file://, {{HTTP}} → fixture server,
+    {{EMPTY_PROFILE}} → a never-logged-in profile dir (control for persistence cases)."""
+    return (
+        text.replace("{{FIXTURES}}", FIXTURES.as_uri())
+        .replace("{{HTTP}}", f"http://127.0.0.1:{FIXTURE_PORT}")
+        .replace("{{EMPTY_PROFILE}}", str(EMPTY_PROFILE_DIR))
     )
 
 
@@ -77,7 +84,9 @@ def start_fixture_server() -> None:
                 self._send(
                     "<html><head><title>login</title></head><body><h1>LOGIN OK</h1>"
                     '<a href="/protected">go to protected</a></body></html>',
-                    [("Set-Cookie", "chrime_sess=agent-ok; Path=/")],
+                    # Max-Age makes it a *persistent* cookie — a session cookie is allowed to
+                    # die with the process, so it could never prove an on-disk jar works.
+                    [("Set-Cookie", "chrime_sess=agent-ok; Path=/; Max-Age=3600")],
                 )
             elif self.path.startswith("/protected"):
                 cookie = self.headers.get("Cookie") or ""
@@ -235,13 +244,27 @@ def materialize_ops(ops: list[dict], responses: list[Any]) -> list[dict]:
     return out
 
 
-def run_chrime(bin_path: Path, lines: list[str], timeout: float = 120.0) -> list[str]:
+def case_env(case: dict) -> dict:
+    """Process env for this case's chrime — inherited, plus any per-case overrides.
+
+    A case that needs a *different* engine profile (e.g. proving a fresh profile starts
+    logged out) sets {"env": {"CHRIME_PROFILE_DIR": "{{EMPTY_PROFILE}}"}}.
+    """
+    env = dict(os.environ)
+    env.update(case.get("env") or {})
+    return env
+
+
+def run_chrime(
+    bin_path: Path, lines: list[str], timeout: float = 120.0, env: dict | None = None
+) -> list[str]:
     proc = subprocess.Popen(
         [str(bin_path), "--api", *ENGINE_ARGS],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
     payload = "\n".join(lines) + "\n"
     try:
@@ -416,7 +439,7 @@ def run_case(bin_path: Path, case: dict, crumbs: Breadcrumbs) -> dict:
         if "raw_ops" in case:
             crumbs.step(case_trace, 1, "raw")
             lines = list(case["raw_ops"])
-            out_lines = run_chrime(bin_path, lines)
+            out_lines = run_chrime(bin_path, lines, env=case_env(case))
             responses = parse_responses(out_lines)
         else:
             ops = case.get("ops") or []
@@ -430,6 +453,7 @@ def run_case(bin_path: Path, case: dict, crumbs: Breadcrumbs) -> dict:
                     stderr=subprocess.PIPE,
                     text=True,
                     bufsize=1,
+                    env=case_env(case),
                 )
                 assert proc.stdin and proc.stdout
                 try:
@@ -452,7 +476,7 @@ def run_case(bin_path: Path, case: dict, crumbs: Breadcrumbs) -> dict:
                 for i, op in enumerate(ops, 1):
                     crumbs.step(case_trace, i, op.get("op", "?"))
                 lines = [json.dumps(op) for op in ops]
-                out_lines = run_chrime(bin_path, lines)
+                out_lines = run_chrime(bin_path, lines, env=case_env(case))
                 responses = parse_responses(out_lines)
 
         failures = []
@@ -598,7 +622,18 @@ def main() -> int:
         print(f"Fixture server on http://127.0.0.1:{FIXTURE_PORT} (cookie + JS fixtures)")
 
     crumbs = Breadcrumbs()
+
+    # Fresh engine profile per run. Cases that prove cookies survive a restart must not be
+    # able to pass on a jar left behind by an earlier run.
+    global PROFILE_DIR, EMPTY_PROFILE_DIR
+    PROFILE_DIR = LOG_DIR / f"suite-profile-{crumbs.suite_id}"
+    EMPTY_PROFILE_DIR = LOG_DIR / f"suite-profile-{crumbs.suite_id}-empty"
+    PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    EMPTY_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    os.environ["CHRIME_PROFILE_DIR"] = str(PROFILE_DIR)
+
     print(f"Running {len(cases)} cases against {args.chrime}")
+    print(f"Engine profile (cookie jar): {PROFILE_DIR}")
     print(f"Suite breadcrumb root: {crumbs.root}")
     print(f"Hierarchy: docs/BREADCRUMBS.md  |  trace → {TRACE_PATH}")
     results = []

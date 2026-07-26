@@ -117,7 +117,7 @@ Subagent loop: run suite → read `logs/api-bugs.jsonl` → fix → re-run faile
 |----|------|------|--------|
 | **servo-build** | `cargo build --release --features servo` succeeds and `--engine servo` selects it | Build green (7m13s, rustc 1.96); `ping` reports `engine: servo` (case 121) | green |
 | **faithful-js** | Post-JS DOM, not empty shell | Cases 122–127: JS-set title, JS-created nodes, JS-appended link, JS click handler | green |
-| **auth-session** | Cookies/session across navigations | Case 128: `/login` sets cookie → `/protected` shows logged-in content | green in-process (no on-disk jar; fresh process starts logged out) |
+| **auth-session** | Cookies/session across navigations **and across processes** | Case 128 (in-process); cases 131/132 (jar written on clean shutdown, reloaded by a fresh process); case 133 control (empty profile → login wall) | green (SIGKILL still loses the jar) |
 | **gmail-scour** | End-to-end Gmail via API only | ≥5 threads structured extract | open |
 | **control-surfaces** | Settle, intercept, render-tree as data | `settle` returns a real receipt (spins/ms/quiescent) — cases 119/125 | open (1 of 3: no intercept, no render-tree) |
 

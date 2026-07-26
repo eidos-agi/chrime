@@ -237,7 +237,7 @@ status: green (servo engine; suite cases 122-127, `--engine servo`; static engin
 ### auth-session
 must: Chrime carries an authenticated session (cookies/credentials) across navigations.
 case: authenticate to a test app, then fetch a protected page; the snapshot shows logged-in content, not the login wall.
-status: green in-process (servo; suite case 128 — cookie set on /login carried to /protected across a separate navigate). Gap: no cookie jar persisted to disk, so a fresh process starts logged out.
+status: green (servo; case 128 — cookie carried across navigations in-process; cases 131/132 — cookie jar persisted to `$CHRIME_PROFILE_DIR` and reloaded by a *different* process that never logs in; case 133 control — empty profile hits the login wall. Gap: flush needs a clean shutdown, a SIGKILL loses the jar.)
 
 ### gmail-scour
 must: An agent scours a real authenticated Gmail account end-to-end — navigate, list, open, and extract from threads — driven entirely through the API.
