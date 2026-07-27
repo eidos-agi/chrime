@@ -29,6 +29,54 @@ use crate::views::ViewKind;
 use crate::{normalize, Engine, StaticEngine};
 
 const CHROME_H: u32 = 52;
+/// Live page share of the split (not 50% — half-width forces mobile/"vertical" site layouts).
+const DEFAULT_PAGE_RATIO: f64 = 0.68;
+/// Auto mode chooses side-by-side only when the window is this wide (and landscape).
+const AUTO_SIDE_MIN_WIDTH: u32 = 1100;
+
+/// Dual-pane geometry. Default `Auto` prefers a **wide page** (side) on desktop monitors
+/// instead of a permanent 50/50 phone column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaneMode {
+    /// Side when wide+landscape; stack when narrow/portrait.
+    Auto,
+    /// Page | agent (side-by-side) — desktop / horizontal reading.
+    Side,
+    /// Page / agent (stacked) — narrow windows; page still gets majority height.
+    Stack,
+}
+
+impl PaneMode {
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(PaneMode::Auto),
+            "side" | "horizontal" | "landscape" | "lr" | "left-right" => Some(PaneMode::Side),
+            "stack" | "vertical" | "portrait" | "tb" | "top-bottom" => Some(PaneMode::Stack),
+            _ => None,
+        }
+    }
+    fn as_str(self) -> &'static str {
+        match self {
+            PaneMode::Auto => "auto",
+            PaneMode::Side => "side",
+            PaneMode::Stack => "stack",
+        }
+    }
+    fn cycle(self) -> Self {
+        match self {
+            PaneMode::Auto => PaneMode::Side,
+            PaneMode::Side => PaneMode::Stack,
+            PaneMode::Stack => PaneMode::Auto,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            PaneMode::Auto => "Layout · auto",
+            PaneMode::Side => "Layout · side",
+            PaneMode::Stack => "Layout · stack",
+        }
+    }
+}
 
 /// Product rule: **no pop-ups for Chrime features.**
 /// Features are always-visible chrome toggles or JSON ops. Never a settings modal,
@@ -301,6 +349,8 @@ enum Msg {
     Api(ApiCmd),
     /// Switch right-pane projection of the *same* page (no second page store).
     SetView(ViewKind),
+    /// Cycle dual-pane geometry (auto → side → stack).
+    CycleLayout,
     /// Run a full API JSON line on the GUI session (Hancock, knox_fill, etc.).
     ApiLine(String),
 }
@@ -357,6 +407,8 @@ pub fn run(start: Option<String>, listen: Option<String>) -> wry::Result<()> {
         knox_query: String::new(),
         api_session: Session::new(),
         view_kind: ViewKind::Full,
+        pane_mode: PaneMode::Auto,
+        page_ratio: DEFAULT_PAGE_RATIO,
     };
     if let Some(u) = app.eng.current_url() {
         app.api_session.history.push(u);
@@ -387,6 +439,10 @@ struct App {
     api_session: Session,
     /// Right-pane projection of the single stored page (enum only — no cached node lists).
     view_kind: ViewKind,
+    /// Dual-pane geometry preference (auto adapts; never stuck at 50/50 phone column).
+    pane_mode: PaneMode,
+    /// Fraction of the split given to the live page (0.45–0.85). Default 0.68.
+    page_ratio: f64,
 }
 
 impl LiveSurface for App {
@@ -410,30 +466,150 @@ impl LiveSurface for App {
     fn mark_count(&self) -> usize {
         self.mark_count
     }
+
+    fn layout_info(&self) -> Option<serde_json::Value> {
+        Some(self.layout_report_json())
+    }
+
+    fn set_pane_layout(
+        &mut self,
+        mode: Option<&str>,
+        page_ratio: Option<f64>,
+    ) -> Result<serde_json::Value, String> {
+        if let Some(m) = mode {
+            self.pane_mode = PaneMode::parse(m).ok_or_else(|| {
+                format!("unknown layout mode `{m}` — use auto|side|stack")
+            })?;
+        }
+        if let Some(r) = page_ratio {
+            if !(0.45..=0.85).contains(&r) {
+                return Err("page_ratio must be between 0.45 and 0.85".into());
+            }
+            self.page_ratio = r;
+        }
+        self.apply_bounds();
+        self.refresh_chrome();
+        // AI marks re-measure after geometry change.
+        self.apply_ai_vis();
+        Ok(self.layout_report_json())
+    }
+
+    fn cycle_pane_layout(&mut self) -> Result<serde_json::Value, String> {
+        self.pane_mode = self.pane_mode.cycle();
+        self.apply_bounds();
+        self.refresh_chrome();
+        self.apply_ai_vis();
+        Ok(self.layout_report_json())
+    }
 }
 
 impl App {
-    fn layout(&self) -> Option<(Rect, Rect, Rect)> {
+    fn window_logical_size(&self) -> Option<(u32, u32)> {
         let window = self.window.as_ref()?;
         let size = window.inner_size().to_logical::<u32>(window.scale_factor());
-        let w = size.width.max(2);
-        let h = size.height.max(CHROME_H + 2);
-        let half = w / 2;
+        Some((size.width.max(2), size.height.max(CHROME_H + 2)))
+    }
+
+    fn effective_mode(&self, w: u32, h: u32) -> PaneMode {
+        match self.pane_mode {
+            PaneMode::Auto => {
+                // Wide landscape → side-by-side (desktop page width). Narrow/portrait → stack
+                // so the page is still full width instead of a skinny half column.
+                if w >= AUTO_SIDE_MIN_WIDTH && w >= h {
+                    PaneMode::Side
+                } else {
+                    PaneMode::Stack
+                }
+            }
+            other => other,
+        }
+    }
+
+    fn layout_report_json(&self) -> serde_json::Value {
+        let (w, h) = self.window_logical_size().unwrap_or((0, 0));
+        let effective = self.effective_mode(w, h);
+        let body_h = h.saturating_sub(CHROME_H);
+        let ratio = self.page_ratio.clamp(0.45, 0.85);
+        let (page_w, page_h) = match effective {
+            PaneMode::Side => {
+                let pw = ((w as f64) * ratio).round() as u32;
+                let pw = pw.max(320).min(w.saturating_sub(280).max(320));
+                (pw.min(w), body_h)
+            }
+            PaneMode::Stack | PaneMode::Auto => {
+                // Auto is resolved above; treat remaining as stack for sizing report.
+                let ph = ((body_h as f64) * ratio).round() as u32;
+                let ph = ph.max(200).min(body_h.saturating_sub(160).max(200));
+                (w, ph.min(body_h))
+            }
+        };
+        serde_json::json!({
+            "ok": true,
+            "action": "layout",
+            "layout_mode": self.pane_mode.as_str(),
+            "layout_effective": effective.as_str(),
+            "page_ratio": ratio,
+            "window_width": w,
+            "window_height": h,
+            "page_width": page_w,
+            "page_height": page_h,
+            "english": format!(
+                "Layout {} (effective {}): live page {}×{} at {:.0}% share — not a permanent half-width phone column.",
+                self.pane_mode.as_str(),
+                effective.as_str(),
+                page_w,
+                page_h,
+                ratio * 100.0
+            ),
+        })
+    }
+
+    fn layout(&self) -> Option<(Rect, Rect, Rect)> {
+        let (w, h) = self.window_logical_size()?;
         let body_h = h - CHROME_H;
-        Some((
-            Rect {
-                position: LogicalPosition::new(0, 0).into(),
-                size: LogicalSize::new(w, CHROME_H).into(),
-            },
-            Rect {
-                position: LogicalPosition::new(0, CHROME_H).into(),
-                size: LogicalSize::new(half, body_h).into(),
-            },
-            Rect {
-                position: LogicalPosition::new(half, CHROME_H).into(),
-                size: LogicalSize::new(w - half, body_h).into(),
-            },
-        ))
+        let ratio = self.page_ratio.clamp(0.45, 0.85);
+        let effective = self.effective_mode(w, h);
+        let chrome = Rect {
+            position: LogicalPosition::new(0, 0).into(),
+            size: LogicalSize::new(w, CHROME_H).into(),
+        };
+        match effective {
+            PaneMode::Side => {
+                let page_w = ((w as f64) * ratio).round() as u32;
+                let page_w = page_w.max(320).min(w.saturating_sub(280).max(320)).min(w);
+                let side_w = w.saturating_sub(page_w).max(1);
+                Some((
+                    chrome,
+                    Rect {
+                        position: LogicalPosition::new(0, CHROME_H).into(),
+                        size: LogicalSize::new(page_w, body_h).into(),
+                    },
+                    Rect {
+                        position: LogicalPosition::new(page_w, CHROME_H).into(),
+                        size: LogicalSize::new(side_w, body_h).into(),
+                    },
+                ))
+            }
+            PaneMode::Stack | PaneMode::Auto => {
+                let page_h = ((body_h as f64) * ratio).round() as u32;
+                let page_h = page_h
+                    .max(200)
+                    .min(body_h.saturating_sub(160).max(200))
+                    .min(body_h);
+                let side_h = body_h.saturating_sub(page_h).max(1);
+                Some((
+                    chrome,
+                    Rect {
+                        position: LogicalPosition::new(0, CHROME_H).into(),
+                        size: LogicalSize::new(w, page_h).into(),
+                    },
+                    Rect {
+                        position: LogicalPosition::new(0, CHROME_H + page_h).into(),
+                        size: LogicalSize::new(w, side_h).into(),
+                    },
+                ))
+            }
+        }
     }
 
     fn apply_bounds(&self) {
@@ -576,7 +752,12 @@ impl App {
     fn refresh_chrome(&self) {
         let url = self.eng.current_url().unwrap_or_default();
         if let Some(chrome) = &self.chrome {
-            let _ = chrome.load_html(&chrome_html(&url, self.ai_vis, self.mark_count));
+            let _ = chrome.load_html(&chrome_html(
+                &url,
+                self.ai_vis,
+                self.mark_count,
+                self.pane_mode,
+            ));
         }
     }
 
@@ -764,6 +945,9 @@ impl App {
                     let _ = reply.send(resp);
                 }
                 Msg::SetView(kind) => self.set_view(kind),
+                Msg::CycleLayout => {
+                    let _ = self.cycle_pane_layout();
+                }
                 Msg::ApiLine(line) => {
                     let resp = self.handle_api_line(&line);
                     // Surface outcome in Knox status strip (no modal).
@@ -796,43 +980,43 @@ impl ApplicationHandler for App {
 
         let mut attrs = Window::default_attributes();
         attrs.title = "Chrime".into();
-        attrs.inner_size = Some(LogicalSize::new(1400.0, 900.0).into());
+        // Landscape desktop default — auto layout chooses side-by-side with ~68% page width.
+        attrs.inner_size = Some(LogicalSize::new(1600.0, 1000.0).into());
         let window = event_loop.create_window(attrs).expect("create window");
-
-        let size = window.inner_size().to_logical::<u32>(window.scale_factor());
-        let w = size.width.max(2);
-        let h = size.height.max(CHROME_H + 2);
-        let half = w / 2;
-        let body_h = h - CHROME_H;
 
         let start_url = self
             .eng
             .current_url()
             .unwrap_or_else(|| "about:blank".into());
 
+        // Stash window so layout() can measure; use placeholder bounds then apply_bounds.
+        self.window = Some(window);
+        let (chrome_r, page_r, side_r) = self
+            .layout()
+            .expect("window set; layout must resolve");
+
         let tx_chrome = self.tx.clone();
         let chrome = WebViewBuilder::new()
-            .with_bounds(Rect {
-                position: LogicalPosition::new(0, 0).into(),
-                size: LogicalSize::new(w, CHROME_H).into(),
-            })
+            .with_bounds(chrome_r)
             .with_initialization_script(NO_POPUPS_JS)
-            .with_html(chrome_html(&start_url, self.ai_vis, self.mark_count))
+            .with_html(chrome_html(
+                &start_url,
+                self.ai_vis,
+                self.mark_count,
+                self.pane_mode,
+            ))
             .with_ipc_handler(move |req: Request<String>| {
                 handle_ipc(req.body(), &tx_chrome);
             })
             .with_new_window_req_handler(|_url, _| NewWindowResponse::Deny)
             .with_download_started_handler(|_url, _path| false)
-            .build_as_child(&window)
+            .build_as_child(self.window.as_ref().unwrap())
             .expect("chrome webview");
 
         let tx_page = self.tx.clone();
         let tx_new_win = self.tx.clone();
         let page = WebViewBuilder::new()
-            .with_bounds(Rect {
-                position: LogicalPosition::new(0, CHROME_H).into(),
-                size: LogicalSize::new(half, body_h).into(),
-            })
+            .with_bounds(page_r)
             .with_initialization_script(NO_POPUPS_JS)
             .with_url(if start_url == "about:blank" {
                 "about:blank"
@@ -845,7 +1029,7 @@ impl ApplicationHandler for App {
                     handle_ipc(req.body(), &tx);
                 }
             })
-            // No popup windows: load the URL in the main left pane instead.
+            // No popup windows: load the URL in the main live pane instead.
             .with_new_window_req_handler(move |url, _features| {
                 if !url.is_empty() && url != "about:blank" {
                     let _ = tx_new_win.send(Msg::Navigate(url));
@@ -859,7 +1043,7 @@ impl ApplicationHandler for App {
                     let _ = tx_page.send(Msg::PageLoaded(url));
                 }
             })
-            .build_as_child(&window)
+            .build_as_child(self.window.as_ref().unwrap())
             .expect("page webview");
 
         let tx_side = self.tx.clone();
@@ -874,10 +1058,7 @@ impl ApplicationHandler for App {
         );
         self.clickmap = clickmap;
         let side = WebViewBuilder::new()
-            .with_bounds(Rect {
-                position: LogicalPosition::new(half, CHROME_H).into(),
-                size: LogicalSize::new(w - half, body_h).into(),
-            })
+            .with_bounds(side_r)
             .with_initialization_script(NO_POPUPS_JS)
             .with_html(side_html_str)
             .with_ipc_handler(move |req: Request<String>| {
@@ -885,13 +1066,13 @@ impl ApplicationHandler for App {
             })
             .with_new_window_req_handler(|_url, _| NewWindowResponse::Deny)
             .with_download_started_handler(|_url, _path| false)
-            .build_as_child(&window)
+            .build_as_child(self.window.as_ref().unwrap())
             .expect("side webview");
 
-        self.window = Some(window);
         self.chrome = Some(chrome);
         self.page = Some(page);
         self.side = Some(side);
+        self.apply_bounds();
         // First paint overlay after a beat (page may still be settling).
         if self.ai_vis {
             let _ = self.tx.send(Msg::PageLoaded(start_url.clone()));
@@ -988,6 +1169,10 @@ fn handle_ipc(body: &str, tx: &Sender<Msg>) {
                 let _ = tx.send(Msg::SetView(kind));
             }
         }
+        "layout" | "cycle_layout" => {
+            // Chrome button cycles; full set via API JSONL on :7420.
+            let _ = tx.send(Msg::CycleLayout);
+        }
         // Hancock / any full API line from chrome (wait=false so the window does not freeze).
         "hancock_request" | "ask_hancock" | "request_permission" => {
             let _ = tx.send(Msg::ApiLine(body.to_string()));
@@ -1009,7 +1194,7 @@ fn esc(s: &str) -> String {
         .collect()
 }
 
-fn chrome_html(url: &str, ai_vis: bool, mark_count: usize) -> String {
+fn chrome_html(url: &str, ai_vis: bool, mark_count: usize, pane_mode: PaneMode) -> String {
     let ai_class = if ai_vis { "ai on" } else { "ai" };
     let ai_label = if ai_vis {
         if mark_count > 0 {
@@ -1020,6 +1205,7 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize) -> String {
     } else {
         "AI vis".into()
     };
+    let layout_label = pane_mode.label();
     format!(
         r##"<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -1027,8 +1213,8 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize) -> String {
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   html, body {{ height: 100%; overflow: hidden; }}
   body {{
-    display: flex; align-items: center; gap: 10px;
-    padding: 0 12px;
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 10px;
     background: #1c1c1e;
     font: 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     color: #f5f5f7;
@@ -1045,7 +1231,7 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize) -> String {
   .brand span {{ opacity: 0.85; }}
   form {{
     flex: 1 1 auto;
-    display: flex; align-items: center; gap: 8px;
+    display: flex; align-items: center; gap: 6px;
     min-width: 0;
   }}
   input {{
@@ -1065,12 +1251,12 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize) -> String {
   button {{
     flex: 0 0 auto;
     height: 32px;
-    padding: 0 14px;
+    padding: 0 12px;
     border: 0;
     border-radius: 0;
     background: #ff9f0a;
     color: #1c1c1e;
-    font: 600 13px/1 -apple-system, sans-serif;
+    font: 600 12px/1 -apple-system, sans-serif;
     cursor: pointer;
   }}
   button.ghost {{
@@ -1106,10 +1292,11 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize) -> String {
     <button type="submit">Go</button>
     <button type="button" class="ghost" onclick="read()">Read</button>
     <button type="button" class="{ai_class}" onclick="toggleAi()" title="Toggle AI visibility marks on the rendered page">{ai_label}</button>
+    <button type="button" class="ghost" onclick="cycleLayout()" title="Cycle layout: auto (wide page) · side · stack">{layout_label}</button>
     <button type="button" class="ghost" onclick="knoxFind()" title="Find credentials in Knox for this site">Knox</button>
     <button type="button" class="ghost" onclick="askHancock()" title="Ask Hancock for permission (human sign)">Hancock</button>
   </form>
-  <div class="hint">left = you help surf · right = agent DOM · Hancock = sign for me</div>
+  <div class="hint">live page majority width · agent pane adapts · Hancock = sign</div>
   <script>
     function post(obj) {{ window.ipc.postMessage(JSON.stringify(obj)); return false; }}
     function go() {{
@@ -1118,6 +1305,7 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize) -> String {
     function back() {{ return post({{op:'back'}}); }}
     function read() {{ return post({{op:'read'}}); }}
     function toggleAi() {{ return post({{op:'toggle_ai_vis'}}); }}
+    function cycleLayout() {{ return post({{op:'cycle_layout'}}); }}
     function knoxFind() {{ return post({{op:'knox_find'}}); }}
     function askHancock() {{
       var url = document.getElementById('url').value || '';
@@ -1137,7 +1325,8 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize) -> String {
 </body></html>"##,
         url = esc(url),
         ai_class = ai_class,
-        ai_label = esc(&ai_label)
+        ai_label = esc(&ai_label),
+        layout_label = esc(layout_label),
     )
 }
 

@@ -29,6 +29,23 @@ pub trait LiveSurface {
     fn set_ai_vis(&mut self, on: bool);
     fn ai_vis(&self) -> bool;
     fn mark_count(&self) -> usize;
+    /// Dual-pane geometry (mode, effective orientation, page pixel size). None if not GUI.
+    fn layout_info(&self) -> Option<serde_json::Value> {
+        None
+    }
+    /// Set pane layout. `mode`: auto|side|stack. `page_ratio`: 0.45–0.85 share for the live page.
+    fn set_pane_layout(
+        &mut self,
+        mode: Option<&str>,
+        page_ratio: Option<f64>,
+    ) -> Result<serde_json::Value, String> {
+        let _ = (mode, page_ratio);
+        Err("layout needs the dual-pane GUI".into())
+    }
+    /// Cycle auto → side → stack → auto (chrome button / agent convenience).
+    fn cycle_pane_layout(&mut self) -> Result<serde_json::Value, String> {
+        Err("layout needs the dual-pane GUI".into())
+    }
 }
 
 /// Session state for headless / TCP API (history for `back`/`forward` + breadcrumb SEQ).
@@ -140,6 +157,7 @@ fn dispatch_inner(
                 "session_save", "session_load", "session_list", "session_delete",
                 "hancock_request", "hancock_wait", "hancock_pending",
                 "set_ai_vis", "toggle_ai_vis", "ai_marks",
+                "layout",
                 "eval", "wait", "quit"
             ],
             "views": ViewKind::all().iter().map(|v| v.as_str()).collect::<Vec<_>>(),
@@ -152,7 +170,7 @@ fn dispatch_inner(
 
         "status" => {
             let snap = eng.snapshot();
-            ok_json(serde_json::json!({
+            let mut body = serde_json::json!({
                 "ok": true,
                 "engine": eng.engine_name(),
                 "url": eng.current_url(),
@@ -167,7 +185,51 @@ fn dispatch_inner(
                 "run": trace::run_root(),
                 "profile_dir": eng.profile_dir(),
                 "hierarchy_doc": "docs/BREADCRUMBS.md",
-            }))
+            });
+            if let Some(info) = live.as_ref().and_then(|l| l.layout_info()) {
+                if let Some(obj) = body.as_object_mut() {
+                    if let Some(map) = info.as_object() {
+                        for (k, v) in map {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+            ok_json(body)
+        }
+
+        // Dual-pane geometry: auto|side|stack + page_ratio (live page majority by default).
+        "layout" => {
+            let Some(surface) = live.as_mut() else {
+                return err(
+                    "no_live",
+                    "layout needs the dual-pane GUI (default chrime window on :7420)",
+                );
+            };
+            if v.get("cycle").and_then(|c| c.as_bool()).unwrap_or(false)
+                || v.get("mode").and_then(|m| m.as_str()) == Some("cycle")
+            {
+                return match surface.cycle_pane_layout() {
+                    Ok(info) => ok_json(info),
+                    Err(e) => err("layout_failed", &e),
+                };
+            }
+            let mode = v.get("mode").and_then(|m| m.as_str());
+            let page_ratio = v
+                .get("page_ratio")
+                .or_else(|| v.get("ratio"))
+                .and_then(|r| r.as_f64());
+            if mode.is_none() && page_ratio.is_none() {
+                // bare layout → report current
+                return match surface.layout_info() {
+                    Some(info) => ok_json(info),
+                    None => err("layout_failed", "no layout info"),
+                };
+            }
+            match surface.set_pane_layout(mode, page_ratio) {
+                Ok(info) => ok_json(info),
+                Err(e) => err("layout_failed", &e),
+            }
         }
 
         "navigate" => {

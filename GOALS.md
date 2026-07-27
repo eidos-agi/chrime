@@ -28,6 +28,7 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 53. [x] AI visibility Set-of-Marks on live clickables (ai-visibility-marks)
 54. [x] Knox find/fill/use; secrets never surface (knox-credentials, secrets-never-surface)
 55. [x] Dual-pane GUI is the **default** build (co-surf; dual-pane-gui-default)
+55b. [x] Adaptive pane layout (auto side/stack, page majority ~68%) — not permanent 50/50 phone column (EID-1057)
 56. [x] No feature pop-ups; suppress web modals (no-feature-popups, no-web-modals)
 57. [x] Square buttons only (square-buttons)
 58. [x] Lean headless still available via `--no-default-features` (lean-optional-core)
