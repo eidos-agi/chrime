@@ -3,6 +3,7 @@
 ## 0.1.0 — 2026-07-27
 
 ### Added
+- Collapsible agent **sidebar** (chrome `Sidebar · on/off` + `{"op":"sidebar","visible":false}`) — full-width live page when collapsed (EID-1058)
 - `forward` history stack after `back`; `status.forward_len`
 - `query` CSS selector op (`selector` / `css` / `q`) with stable semantic `node_id`s
 - `layout` dual-pane geometry: `auto` | `side` | `stack` + `page_ratio` (GUI); chrome Layout button

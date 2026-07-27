@@ -94,7 +94,8 @@ Every capability is a JSON op. Humans may use the chrome buttons; agents never n
 | op | purpose |
 |----|---------|
 | `navigate` / `back` / `forward` / `current` | go places (forward stack survives `back`) |
-| `layout` | dual-pane geometry: `auto` (wide page default) · `side` · `stack` · `page_ratio` |
+| `layout` | dual-pane geometry: `auto` · `side` · `stack` · `page_ratio` · `sidebar` true/false |
+| `sidebar` | collapse/expand agent pane (`visible` / `toggle`) — full-width live page when off |
 | `snapshot` / `view` / `views` / `read` / `links` / `find_text` / `query` | see the page (CSS `query` keeps stable node-ids) |
 | `click` | follow a node_id (not a mouse) |
 | `settle` | drive the engine to quiescence; returns a receipt (`spins`, `ms`, `quiescent`), never a sleep |

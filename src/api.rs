@@ -46,6 +46,14 @@ pub trait LiveSurface {
     fn cycle_pane_layout(&mut self) -> Result<serde_json::Value, String> {
         Err("layout needs the dual-pane GUI".into())
     }
+    /// Show/hide the agent DOM sidebar. Collapsed → live page is full width under chrome.
+    fn set_sidebar_visible(&mut self, visible: bool) -> Result<serde_json::Value, String> {
+        let _ = visible;
+        Err("sidebar needs the dual-pane GUI".into())
+    }
+    fn toggle_sidebar(&mut self) -> Result<serde_json::Value, String> {
+        Err("sidebar needs the dual-pane GUI".into())
+    }
 }
 
 /// Session state for headless / TCP API (history for `back`/`forward` + breadcrumb SEQ).
@@ -157,7 +165,7 @@ fn dispatch_inner(
                 "session_save", "session_load", "session_list", "session_delete",
                 "hancock_request", "hancock_wait", "hancock_pending",
                 "set_ai_vis", "toggle_ai_vis", "ai_marks",
-                "layout",
+                "layout", "sidebar",
                 "eval", "wait", "quit"
             ],
             "views": ViewKind::all().iter().map(|v| v.as_str()).collect::<Vec<_>>(),
@@ -199,6 +207,7 @@ fn dispatch_inner(
         }
 
         // Dual-pane geometry: auto|side|stack + page_ratio (live page majority by default).
+        // Optional sidebar:true|false collapses the agent pane so the live page goes full width.
         "layout" => {
             let Some(surface) = live.as_mut() else {
                 return err(
@@ -219,8 +228,23 @@ fn dispatch_inner(
                 .get("page_ratio")
                 .or_else(|| v.get("ratio"))
                 .and_then(|r| r.as_f64());
-            if mode.is_none() && page_ratio.is_none() {
+            let sidebar = v
+                .get("sidebar")
+                .or_else(|| v.get("sidebar_visible"))
+                .and_then(|s| s.as_bool());
+            if mode.is_none() && page_ratio.is_none() && sidebar.is_none() {
                 // bare layout → report current
+                return match surface.layout_info() {
+                    Some(info) => ok_json(info),
+                    None => err("layout_failed", "no layout info"),
+                };
+            }
+            if let Some(vis) = sidebar {
+                if let Err(e) = surface.set_sidebar_visible(vis) {
+                    return err("layout_failed", &e);
+                }
+            }
+            if mode.is_none() && page_ratio.is_none() {
                 return match surface.layout_info() {
                     Some(info) => ok_json(info),
                     None => err("layout_failed", "no layout info"),
@@ -229,6 +253,40 @@ fn dispatch_inner(
             match surface.set_pane_layout(mode, page_ratio) {
                 Ok(info) => ok_json(info),
                 Err(e) => err("layout_failed", &e),
+            }
+        }
+
+        // Collapse/expand agent DOM sidebar (full-width live page when hidden).
+        "sidebar" | "panel" => {
+            let Some(surface) = live.as_mut() else {
+                return err(
+                    "no_live",
+                    "sidebar needs the dual-pane GUI (default chrime window on :7420)",
+                );
+            };
+            if v.get("toggle").and_then(|t| t.as_bool()).unwrap_or(false)
+                || v.get("action").and_then(|a| a.as_str()) == Some("toggle")
+            {
+                return match surface.toggle_sidebar() {
+                    Ok(info) => ok_json(info),
+                    Err(e) => err("sidebar_failed", &e),
+                };
+            }
+            if let Some(vis) = v
+                .get("visible")
+                .or_else(|| v.get("open"))
+                .or_else(|| v.get("show"))
+                .and_then(|x| x.as_bool())
+            {
+                return match surface.set_sidebar_visible(vis) {
+                    Ok(info) => ok_json(info),
+                    Err(e) => err("sidebar_failed", &e),
+                };
+            }
+            // bare sidebar → report current layout info
+            match surface.layout_info() {
+                Some(info) => ok_json(info),
+                None => err("sidebar_failed", "no layout info"),
             }
         }
 

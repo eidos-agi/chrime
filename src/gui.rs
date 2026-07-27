@@ -351,6 +351,8 @@ enum Msg {
     SetView(ViewKind),
     /// Cycle dual-pane geometry (auto → side → stack).
     CycleLayout,
+    /// Collapse / expand the agent DOM sidebar.
+    ToggleSidebar,
     /// Run a full API JSON line on the GUI session (Hancock, knox_fill, etc.).
     ApiLine(String),
 }
@@ -409,6 +411,7 @@ pub fn run(start: Option<String>, listen: Option<String>) -> wry::Result<()> {
         view_kind: ViewKind::Full,
         pane_mode: PaneMode::Auto,
         page_ratio: DEFAULT_PAGE_RATIO,
+        sidebar_visible: true,
     };
     if let Some(u) = app.eng.current_url() {
         app.api_session.history.push(u);
@@ -443,6 +446,8 @@ struct App {
     pane_mode: PaneMode,
     /// Fraction of the split given to the live page (0.45–0.85). Default 0.68.
     page_ratio: f64,
+    /// Agent DOM sidebar. When false, live page fills the full body under chrome.
+    sidebar_visible: bool,
 }
 
 impl LiveSurface for App {
@@ -501,6 +506,18 @@ impl LiveSurface for App {
         self.apply_ai_vis();
         Ok(self.layout_report_json())
     }
+
+    fn set_sidebar_visible(&mut self, visible: bool) -> Result<serde_json::Value, String> {
+        self.sidebar_visible = visible;
+        self.apply_bounds();
+        self.refresh_chrome();
+        self.apply_ai_vis();
+        Ok(self.layout_report_json())
+    }
+
+    fn toggle_sidebar(&mut self) -> Result<serde_json::Value, String> {
+        self.set_sidebar_visible(!self.sidebar_visible)
+    }
 }
 
 impl App {
@@ -530,36 +547,46 @@ impl App {
         let effective = self.effective_mode(w, h);
         let body_h = h.saturating_sub(CHROME_H);
         let ratio = self.page_ratio.clamp(0.45, 0.85);
-        let (page_w, page_h) = match effective {
-            PaneMode::Side => {
-                let pw = ((w as f64) * ratio).round() as u32;
-                let pw = pw.max(320).min(w.saturating_sub(280).max(320));
-                (pw.min(w), body_h)
+        let (page_w, page_h) = if !self.sidebar_visible {
+            (w, body_h)
+        } else {
+            match effective {
+                PaneMode::Side => {
+                    let pw = ((w as f64) * ratio).round() as u32;
+                    let pw = pw.max(320).min(w.saturating_sub(280).max(320));
+                    (pw.min(w), body_h)
+                }
+                PaneMode::Stack | PaneMode::Auto => {
+                    let ph = ((body_h as f64) * ratio).round() as u32;
+                    let ph = ph.max(200).min(body_h.saturating_sub(160).max(200));
+                    (w, ph.min(body_h))
+                }
             }
-            PaneMode::Stack | PaneMode::Auto => {
-                // Auto is resolved above; treat remaining as stack for sizing report.
-                let ph = ((body_h as f64) * ratio).round() as u32;
-                let ph = ph.max(200).min(body_h.saturating_sub(160).max(200));
-                (w, ph.min(body_h))
-            }
+        };
+        let share_pct = if !self.sidebar_visible {
+            100.0
+        } else {
+            ratio * 100.0
         };
         serde_json::json!({
             "ok": true,
             "action": "layout",
             "layout_mode": self.pane_mode.as_str(),
-            "layout_effective": effective.as_str(),
+            "layout_effective": if self.sidebar_visible { effective.as_str() } else { "page-only" },
             "page_ratio": ratio,
+            "sidebar_visible": self.sidebar_visible,
             "window_width": w,
             "window_height": h,
             "page_width": page_w,
             "page_height": page_h,
             "english": format!(
-                "Layout {} (effective {}): live page {}×{} at {:.0}% share — not a permanent half-width phone column.",
+                "Layout {} (effective {}): live page {}×{} · sidebar {} · {:.0}% page share.",
                 self.pane_mode.as_str(),
-                effective.as_str(),
+                if self.sidebar_visible { effective.as_str() } else { "page-only" },
                 page_w,
                 page_h,
-                ratio * 100.0
+                if self.sidebar_visible { "open" } else { "collapsed" },
+                share_pct
             ),
         })
     }
@@ -573,6 +600,21 @@ impl App {
             position: LogicalPosition::new(0, 0).into(),
             size: LogicalSize::new(w, CHROME_H).into(),
         };
+        // Collapsed sidebar: live page owns the entire body; side webview is 1×1 off-corner
+        // (wry has no hide API — zero-area bounds remove it from the visual surface).
+        if !self.sidebar_visible {
+            return Some((
+                chrome,
+                Rect {
+                    position: LogicalPosition::new(0, CHROME_H).into(),
+                    size: LogicalSize::new(w, body_h).into(),
+                },
+                Rect {
+                    position: LogicalPosition::new(w.saturating_sub(1), h.saturating_sub(1)).into(),
+                    size: LogicalSize::new(1, 1).into(),
+                },
+            ));
+        }
         match effective {
             PaneMode::Side => {
                 let page_w = ((w as f64) * ratio).round() as u32;
@@ -757,6 +799,7 @@ impl App {
                 self.ai_vis,
                 self.mark_count,
                 self.pane_mode,
+                self.sidebar_visible,
             ));
         }
     }
@@ -948,6 +991,9 @@ impl App {
                 Msg::CycleLayout => {
                     let _ = self.cycle_pane_layout();
                 }
+                Msg::ToggleSidebar => {
+                    let _ = self.toggle_sidebar();
+                }
                 Msg::ApiLine(line) => {
                     let resp = self.handle_api_line(&line);
                     // Surface outcome in Knox status strip (no modal).
@@ -1004,6 +1050,7 @@ impl ApplicationHandler for App {
                 self.ai_vis,
                 self.mark_count,
                 self.pane_mode,
+                self.sidebar_visible,
             ))
             .with_ipc_handler(move |req: Request<String>| {
                 handle_ipc(req.body(), &tx_chrome);
@@ -1173,6 +1220,13 @@ fn handle_ipc(body: &str, tx: &Sender<Msg>) {
             // Chrome button cycles; full set via API JSONL on :7420.
             let _ = tx.send(Msg::CycleLayout);
         }
+        "toggle_sidebar" | "sidebar_toggle" => {
+            let _ = tx.send(Msg::ToggleSidebar);
+        }
+        "sidebar" | "panel" => {
+            // Chrome always toggles; agents set visible via TCP JSONL (handled in dispatch).
+            let _ = tx.send(Msg::ToggleSidebar);
+        }
         // Hancock / any full API line from chrome (wait=false so the window does not freeze).
         "hancock_request" | "ask_hancock" | "request_permission" => {
             let _ = tx.send(Msg::ApiLine(body.to_string()));
@@ -1194,7 +1248,13 @@ fn esc(s: &str) -> String {
         .collect()
 }
 
-fn chrome_html(url: &str, ai_vis: bool, mark_count: usize, pane_mode: PaneMode) -> String {
+fn chrome_html(
+    url: &str,
+    ai_vis: bool,
+    mark_count: usize,
+    pane_mode: PaneMode,
+    sidebar_visible: bool,
+) -> String {
     let ai_class = if ai_vis { "ai on" } else { "ai" };
     let ai_label = if ai_vis {
         if mark_count > 0 {
@@ -1206,6 +1266,12 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize, pane_mode: PaneMode) 
         "AI vis".into()
     };
     let layout_label = pane_mode.label();
+    let sidebar_class = if sidebar_visible { "ghost" } else { "ai on" };
+    let sidebar_label = if sidebar_visible {
+        "Sidebar · on"
+    } else {
+        "Sidebar · off"
+    };
     format!(
         r##"<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -1213,8 +1279,8 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize, pane_mode: PaneMode) 
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   html, body {{ height: 100%; overflow: hidden; }}
   body {{
-    display: flex; align-items: center; gap: 8px;
-    padding: 0 10px;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 8px;
     background: #1c1c1e;
     font: 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     color: #f5f5f7;
@@ -1231,7 +1297,7 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize, pane_mode: PaneMode) 
   .brand span {{ opacity: 0.85; }}
   form {{
     flex: 1 1 auto;
-    display: flex; align-items: center; gap: 6px;
+    display: flex; align-items: center; gap: 5px;
     min-width: 0;
   }}
   input {{
@@ -1251,12 +1317,12 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize, pane_mode: PaneMode) 
   button {{
     flex: 0 0 auto;
     height: 32px;
-    padding: 0 12px;
+    padding: 0 10px;
     border: 0;
     border-radius: 0;
     background: #ff9f0a;
     color: #1c1c1e;
-    font: 600 12px/1 -apple-system, sans-serif;
+    font: 600 11px/1 -apple-system, sans-serif;
     cursor: pointer;
   }}
   button.ghost {{
@@ -1280,7 +1346,7 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize, pane_mode: PaneMode) 
   .hint {{
     flex: 0 0 auto;
     color: #8e8e93;
-    font-size: 11px;
+    font-size: 10px;
     white-space: nowrap;
   }}
 </style></head>
@@ -1293,10 +1359,11 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize, pane_mode: PaneMode) 
     <button type="button" class="ghost" onclick="read()">Read</button>
     <button type="button" class="{ai_class}" onclick="toggleAi()" title="Toggle AI visibility marks on the rendered page">{ai_label}</button>
     <button type="button" class="ghost" onclick="cycleLayout()" title="Cycle layout: auto (wide page) · side · stack">{layout_label}</button>
+    <button type="button" class="{sidebar_class}" onclick="toggleSidebar()" title="Collapse agent sidebar for full-width live page">{sidebar_label}</button>
     <button type="button" class="ghost" onclick="knoxFind()" title="Find credentials in Knox for this site">Knox</button>
     <button type="button" class="ghost" onclick="askHancock()" title="Ask Hancock for permission (human sign)">Hancock</button>
   </form>
-  <div class="hint">live page majority width · agent pane adapts · Hancock = sign</div>
+  <div class="hint">Sidebar collapses agent pane · full-width page</div>
   <script>
     function post(obj) {{ window.ipc.postMessage(JSON.stringify(obj)); return false; }}
     function go() {{
@@ -1306,6 +1373,7 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize, pane_mode: PaneMode) 
     function read() {{ return post({{op:'read'}}); }}
     function toggleAi() {{ return post({{op:'toggle_ai_vis'}}); }}
     function cycleLayout() {{ return post({{op:'cycle_layout'}}); }}
+    function toggleSidebar() {{ return post({{op:'toggle_sidebar'}}); }}
     function knoxFind() {{ return post({{op:'knox_find'}}); }}
     function askHancock() {{
       var url = document.getElementById('url').value || '';
@@ -1327,6 +1395,8 @@ fn chrome_html(url: &str, ai_vis: bool, mark_count: usize, pane_mode: PaneMode) 
         ai_class = ai_class,
         ai_label = esc(&ai_label),
         layout_label = esc(layout_label),
+        sidebar_class = sidebar_class,
+        sidebar_label = esc(sidebar_label),
     )
 }
 
