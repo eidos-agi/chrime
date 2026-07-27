@@ -7,8 +7,8 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 
 ## Chrime — v0 engine & API (pure Rust, no Servo)
 1. [x] `navigate` + `snapshot` return semantic DOM with stable node-ids (dom-snapshot-api)
-2. [ ] `forward` nav op (engine + API)
-3. [ ] `query(selector)` op — CSS select, return matching node-ids
+2. [x] `forward` nav op (engine + API)
+3. [x] `query(selector)` op — CSS select, return matching node-ids
 4. [x] `find_text(text)` op — node-ids whose text contains a substring
 5. [x] `links` op — list every link (node_id, text, href)
 6. [x] Consistent JSON error shape `{ok:false, code, error}` across all ops
@@ -17,7 +17,7 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 9. [x] Unit test: `walk()`/snapshot on a fixed HTML fixture (roles + ids)
 10. [ ] Integration test: pipe an API script, assert JSON results
 11. [ ] Graceful non-HTML handling (content-type aware)
-12. [x] Expose `back` in the API (forward still open)
+12. [x] Expose `back` + `forward` in the API
 13. [ ] Headed: show node-id beside each line (headed + API share addressing)
 14. [ ] Request timeout config + document
 15. [x] README: API table + views + Knox + dependency policy

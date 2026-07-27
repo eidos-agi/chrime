@@ -87,8 +87,8 @@ Every capability is a JSON op. Humans may use the chrome buttons; agents never n
 
 | op | purpose |
 |----|---------|
-| `navigate` / `back` / `current` | go places |
-| `snapshot` / `view` / `views` / `read` / `links` / `find_text` | see the page (many projections, one buffer) |
+| `navigate` / `back` / `forward` / `current` | go places (forward stack survives `back`) |
+| `snapshot` / `view` / `views` / `read` / `links` / `find_text` / `query` | see the page (CSS `query` keeps stable node-ids) |
 | `click` | follow a node_id (not a mouse) |
 | `settle` | drive the engine to quiescence; returns a receipt (`spins`, `ms`, `quiescent`), never a sleep |
 | `fill` / `type` / `press` / `eval` | live form control (GUI / live surface) |
@@ -184,10 +184,12 @@ Knox's boundary, not a Chrime settings popup.
 | op | args | returns |
 |----|------|---------|
 | `navigate` | `url` | nav result (ok, url, status, title) |
+| `back` / `forward` | — | history stack; `status.forward_len` shows what's available |
 | `snapshot` | — | the semantic DOM: nodes with `node_id`, `role`, `text`, `href`, `clickable` |
 | `read` | — | full page text |
 | `links` | — | every link on the page (`node_id`, `text`, `href`) |
 | `find_text` | `text` | nodes whose text contains the substring — how an agent finds "the login button" |
+| `query` | `selector` | CSS select → `{ok, count, nodes}`; semantic matches keep stable `node_id`s |
 | `click` | `node_id` | follows the node's link (v0: href only; v1 will run JS handlers) |
 | `current` | — | current URL |
 

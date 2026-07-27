@@ -134,6 +134,12 @@ pub(crate) trait Engine {
     fn links(&self) -> Vec<DomNode>;
     /// Nodes whose text contains `q` (case-insensitive) — how an agent finds "the login button".
     fn find_text(&self, q: &str) -> Vec<DomNode>;
+    /// CSS selector → matching nodes. Semantic-tree matches keep stable `node_id`s (click works).
+    /// Default: run the selector against `export_page().html` (post-JS buffer for Servo).
+    fn query(&self, selector: &str) -> Result<Vec<DomNode>, String> {
+        let page = self.export_page();
+        query_html(&page.html, page.url.as_deref(), selector)
+    }
     /// Size of the single stored HTML buffer (0 if unknown). Views never duplicate this.
     fn html_bytes(&self) -> usize {
         0
@@ -405,6 +411,55 @@ impl Engine for StaticEngine {
             .filter(|n| !ql.is_empty() && n.text.to_lowercase().contains(&ql))
             .collect()
     }
+
+    fn query(&self, selector: &str) -> Result<Vec<DomNode>, String> {
+        query_html(&self.html, self.current_url().as_deref(), selector)
+    }
+}
+
+/// CSS-select against a single HTML buffer. Elements that appear in the semantic walk
+/// (interesting tags) get the same stable `node_id`s as `snapshot`/`click`. Other matches
+/// are returned with `node_id: 0` and `clickable: false` so agents can still see them.
+pub(crate) fn query_html(
+    html: &str,
+    url: Option<&str>,
+    selector: &str,
+) -> Result<Vec<DomNode>, String> {
+    let sel = Selector::parse(selector).map_err(|e| format!("invalid CSS selector: {e:?}"))?;
+    let doc = Html::parse_document(html);
+    let base = url.and_then(|u| Url::parse(u).ok());
+
+    // Map ego-tree node id → walk node_id (same pre-order as walk()).
+    let mut id_map = std::collections::HashMap::new();
+    let mut walk_id = 0u32;
+    for node in doc.tree.root().descendants() {
+        let Node::Element(el) = node.value() else {
+            continue;
+        };
+        if !interesting(el.name()) {
+            continue;
+        }
+        walk_id += 1;
+        id_map.insert(node.id(), walk_id);
+    }
+
+    let mut out = Vec::new();
+    for er in doc.select(&sel) {
+        let tag = er.value().name().to_string();
+        let text = collapse(&er.text().collect::<String>());
+        let href = er.value().attr("href").map(|h| resolve(base.as_ref(), h));
+        let node_id = id_map.get(&er.id()).copied().unwrap_or(0);
+        let clickable = node_id > 0 && (tag == "a" || tag == "button");
+        out.push(DomNode {
+            node_id,
+            role: role_of(&tag),
+            tag,
+            text,
+            href,
+            clickable,
+        });
+    }
+    Ok(out)
 }
 
 fn interesting(tag: &str) -> bool {
@@ -613,10 +668,41 @@ fn headed(eng: &mut dyn Engine, start: Option<String>) {
     }
 }
 
+fn print_usage() {
+    println!(
+        "chrime {} — a browser built for AI agents\n\
+         \n\
+         Usage:\n\
+           chrime [url]                 dual-pane GUI + API on 127.0.0.1:7420 (default)\n\
+           chrime --api                 headless JSONL on stdin/stdout\n\
+           chrime --api --listen ADDR   headless JSONL on TCP\n\
+           chrime --tui [url]           terminal DOM view\n\
+           chrime --engine static|servo engine substrate (servo needs --features servo)\n\
+           chrime --version | -v\n\
+           chrime --help | -h | help\n\
+         \n\
+         Drive a running window (no mouse):\n\
+           printf '%s\\n' '{{\"op\":\"ping\"}}' '{{\"op\":\"help\"}}' | nc -w 2 127.0.0.1 7420\n\
+         \n\
+         Key JSONL ops: navigate, back, forward, snapshot, view, read, links,\n\
+           find_text, query, click, settle, fill, knox_*, session_*, hancock_*, quit\n\
+         Docs: README.md · TELOS.md · docs/BREADCRUMBS.md\n",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-v") {
         println!("chrime {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    // POSIX-tool ergonomics: help must never open the GUI / hang waiting for a page.
+    if !args.is_empty()
+        && (args.iter().any(|a| a == "--help" || a == "-h")
+            || args.first().map(|a| a.as_str()) == Some("help"))
+    {
+        print_usage();
         return;
     }
     // Breadcrumb root for this process (docs/BREADCRUMBS.md). Always first log line.
@@ -753,5 +839,13 @@ mod tests {
         assert_eq!(e.links().len(), 1);
         assert_eq!(e.find_text("para").len(), 1);
         assert_eq!(e.find_text("nope").len(), 0);
+        let links = e.query("a[href]").unwrap();
+        assert_eq!(links.len(), 1);
+        assert!(links[0].node_id > 0);
+        assert!(links[0].clickable);
+        assert!(e.query("not[[[valid").is_err());
+        let heads = e.query("h1").unwrap();
+        assert_eq!(heads.len(), 1);
+        assert_eq!(heads[0].text, "Head");
     }
 }

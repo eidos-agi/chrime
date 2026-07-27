@@ -31,9 +31,11 @@ pub trait LiveSurface {
     fn mark_count(&self) -> usize;
 }
 
-/// Session state for headless / TCP API (history for `back` + breadcrumb SEQ).
+/// Session state for headless / TCP API (history for `back`/`forward` + breadcrumb SEQ).
 pub struct Session {
     pub history: Vec<String>,
+    /// URLs popped by `back` — restored by `forward`. Cleared on a fresh navigate/click.
+    pub forward: Vec<String>,
     pub ai_vis: bool,
     /// Hierarchical breadcrumb session (`CHRIME.RUN.*.SESS.sNNNN`).
     pub trace: TraceSession,
@@ -46,16 +48,37 @@ impl Session {
     pub fn new() -> Self {
         Session {
             history: Vec::new(),
+            forward: Vec::new(),
             ai_vis: false,
             trace: TraceSession::new(),
             quit: false,
         }
     }
 
+    /// Record a user-driven navigation. Invalidates anything that was in the forward stack.
     fn push_url(&mut self, url: String) {
         if self.history.last().map(|u| u.as_str()) != Some(url.as_str()) {
             self.history.push(url);
+            self.forward.clear();
         }
+    }
+
+    /// Pop current URL onto the forward stack; return the previous URL to load.
+    fn go_back(&mut self) -> Option<String> {
+        if self.history.len() <= 1 {
+            return None;
+        }
+        if let Some(cur) = self.history.pop() {
+            self.forward.push(cur);
+        }
+        self.history.last().cloned()
+    }
+
+    /// Pop the next forward URL onto history; return it to load.
+    fn go_forward(&mut self) -> Option<String> {
+        let next = self.forward.pop()?;
+        self.history.push(next.clone());
+        Some(next)
     }
 }
 
@@ -110,8 +133,8 @@ fn dispatch_inner(
             "ok": true,
             "ops": [
                 "ping", "help", "status",
-                "navigate", "back", "current", "snapshot", "view", "views", "read", "links",
-                "find_text", "click", "settle",
+                "navigate", "back", "forward", "current", "snapshot", "view", "views", "read", "links",
+                "find_text", "query", "click", "settle",
                 "fill", "type", "press",
                 "knox_find", "knox_fill", "knox_use",
                 "session_save", "session_load", "session_list", "session_delete",
@@ -136,6 +159,7 @@ fn dispatch_inner(
                 "title": snap.title,
                 "node_count": snap.node_count,
                 "history_len": session.history.len(),
+                "forward_len": session.forward.len(),
                 "live": has_live,
                 "ai_vis": live.as_ref().map(|l| l.ai_vis()).unwrap_or(session.ai_vis),
                 "mark_count": live.as_ref().map(|l| l.mark_count()).unwrap_or(0),
@@ -166,22 +190,40 @@ fn dispatch_inner(
         }
 
         "back" => {
-            if session.history.len() > 1 {
-                session.history.pop();
-                let prev = session.history.last().cloned().unwrap();
-                let r = eng.navigate(&prev);
-                if r.ok {
-                    if let Some(surface) = live.as_mut() {
-                        let js = format!(
-                            "window.location.assign({});",
-                            serde_json::to_string(&prev).unwrap_or_else(|_| "\"\"".into())
-                        );
-                        let _ = surface.eval_js(&js);
+            match session.go_back() {
+                Some(prev) => {
+                    let r = eng.navigate(&prev);
+                    if r.ok {
+                        if let Some(surface) = live.as_mut() {
+                            let js = format!(
+                                "window.location.assign({});",
+                                serde_json::to_string(&prev).unwrap_or_else(|_| "\"\"".into())
+                            );
+                            let _ = surface.eval_js(&js);
+                        }
                     }
+                    serde_json::to_string(&r).unwrap()
                 }
-                serde_json::to_string(&r).unwrap()
-            } else {
-                err("no_history", "nothing to go back to")
+                None => err("no_history", "nothing to go back to"),
+            }
+        }
+
+        "forward" => {
+            match session.go_forward() {
+                Some(next) => {
+                    let r = eng.navigate(&next);
+                    if r.ok {
+                        if let Some(surface) = live.as_mut() {
+                            let js = format!(
+                                "window.location.assign({});",
+                                serde_json::to_string(&next).unwrap_or_else(|_| "\"\"".into())
+                            );
+                            let _ = surface.eval_js(&js);
+                        }
+                    }
+                    serde_json::to_string(&r).unwrap()
+                }
+                None => err("no_forward", "nothing to go forward to"),
             }
         }
 
@@ -239,6 +281,28 @@ fn dispatch_inner(
         "find_text" => {
             let q = v.get("text").and_then(|t| t.as_str()).unwrap_or("");
             serde_json::to_string(&eng.find_text(q)).unwrap()
+        }
+
+        // CSS selector → matching nodes. Semantic-tree matches keep stable node_ids (click works).
+        "query" => {
+            let sel = v
+                .get("selector")
+                .or_else(|| v.get("css"))
+                .or_else(|| v.get("q"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            if sel.is_empty() {
+                return err("bad_args", "query requires selector (CSS)");
+            }
+            match eng.query(sel) {
+                Ok(nodes) => ok_json(serde_json::json!({
+                    "ok": true,
+                    "selector": sel,
+                    "count": nodes.len(),
+                    "nodes": nodes,
+                })),
+                Err(e) => err("bad_selector", &e),
+            }
         }
 
         "click" => {
@@ -530,6 +594,7 @@ fn dispatch_inner(
                             session.history.push(u);
                         }
                     }
+                    session.forward.clear();
                     session.ai_vis = saved.ai_vis;
                     if let Some(surface) = live.as_mut() {
                         surface.set_ai_vis(saved.ai_vis);
