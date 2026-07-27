@@ -460,6 +460,26 @@ impl LiveSurface for App {
             .map_err(|e| format!("evaluate_script: {e}"))
     }
 
+    fn eval_js_result(&mut self, js: &str) -> Result<String, String> {
+        let page = self
+            .page
+            .as_ref()
+            .ok_or_else(|| "no page webview".to_string())?;
+        // Expression form: result is JSON-serialized into the callback (wry 0.55).
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(1);
+        page.evaluate_script_with_callback(js, move |result| {
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("evaluate_script_with_callback: {e}"))?;
+        // On macOS WKWebView the callback is usually invoked before eval returns.
+        // Timeout protects against rare async delivery without deadlocking forever.
+        rx.recv_timeout(std::time::Duration::from_secs(8))
+            .map_err(|_| {
+                "live eval timed out waiting for WebView callback (8s) — page may still be loading"
+                    .into()
+            })
+    }
+
     fn set_ai_vis(&mut self, on: bool) {
         self.apply_ai_vis_flag(on);
     }

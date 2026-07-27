@@ -26,6 +26,11 @@ use crate::Engine;
 /// ops that need injection return a clear error.
 pub trait LiveSurface {
     fn eval_js(&mut self, js: &str) -> Result<(), String>;
+    /// Evaluate JS and return the result as a JSON/string payload (live WebView only).
+    fn eval_js_result(&mut self, js: &str) -> Result<String, String> {
+        let _ = js;
+        Err("eval_js_result needs a live surface with callback eval".into())
+    }
     fn set_ai_vis(&mut self, on: bool);
     fn ai_vis(&self) -> bool;
     fn mark_count(&self) -> usize;
@@ -115,6 +120,17 @@ fn ok_json(v: serde_json::Value) -> String {
     v.to_string()
 }
 
+/// WKWebView callbacks often JSON-encode string results (`"hello"`). Unwrap one layer.
+fn strip_js_string_result(s: &str) -> String {
+    let t = s.trim();
+    if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
+        if let Ok(v) = serde_json::from_str::<String>(t) {
+            return v;
+        }
+    }
+    s.to_string()
+}
+
 /// Dispatch one JSON line. `live` is Some when a WebView can inject/fill.
 /// Every call is breadcrumbed under `session.trace` (see docs/BREADCRUMBS.md).
 pub fn dispatch(
@@ -166,7 +182,8 @@ fn dispatch_inner(
                 "hancock_request", "hancock_wait", "hancock_pending",
                 "set_ai_vis", "toggle_ai_vis", "ai_marks",
                 "layout", "sidebar",
-                "eval", "wait", "quit"
+                "eval", "live_eval", "live_read", "live_sync",
+                "wait", "quit"
             ],
             "views": ViewKind::all().iter().map(|v| v.as_str()).collect::<Vec<_>>(),
             "note": "Fully agent-driven. Hancock: request human permission before risky surf actions. STILL_PENDING is NOT approval.",
@@ -518,6 +535,104 @@ fn dispatch_inner(
                 Ok(()) => ok_json(serde_json::json!({ "ok": true, "action": "eval" })),
                 Err(e) => err("eval_failed", &e),
             }
+        }
+
+        // Evaluate JS on the live WebKit pane and return the result (JSON-serialized by the host).
+        // Required for real SPAs (Gmail) where StaticEngine only sees the pre-JS shell.
+        "live_eval" => {
+            let Some(surface) = live.as_mut() else {
+                return err("no_live", "live_eval needs the dual-pane GUI");
+            };
+            let js = v
+                .get("js")
+                .or_else(|| v.get("script"))
+                .or_else(|| v.get("expr"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            if js.is_empty() {
+                return err("bad_args", "live_eval requires js/script/expr");
+            }
+            match surface.eval_js_result(js) {
+                Ok(result) => ok_json(serde_json::json!({
+                    "ok": true,
+                    "action": "live_eval",
+                    "result": result,
+                })),
+                Err(e) => err("eval_failed", &e),
+            }
+        }
+
+        // innerText of the live page (post-JS). Prefer this over `read` for Gmail/SPAs.
+        "live_read" => {
+            let Some(surface) = live.as_mut() else {
+                return err("no_live", "live_read needs the dual-pane GUI");
+            };
+            let js = "document.body ? (document.body.innerText || '') : ''";
+            match surface.eval_js_result(js) {
+                Ok(text) => {
+                    // WKWebView may JSON-encode the string (quotes); strip one layer if present.
+                    let text = strip_js_string_result(&text);
+                    ok_json(serde_json::json!({
+                        "ok": true,
+                        "action": "live_read",
+                        "text": text,
+                        "chars": text.chars().count(),
+                    }))
+                }
+                Err(e) => err("eval_failed", &e),
+            }
+        }
+
+        // Pull live outerHTML into the Engine buffer so snapshot/find_text/query work on SPA DOM.
+        "live_sync" => {
+            let Some(surface) = live.as_mut() else {
+                return err("no_live", "live_sync needs the dual-pane GUI");
+            };
+            let html_js = "document.documentElement ? document.documentElement.outerHTML : ''";
+            let title_js = "document.title || ''";
+            let url_js = "location.href || ''";
+            let html = match surface.eval_js_result(html_js) {
+                Ok(h) => strip_js_string_result(&h),
+                Err(e) => return err("eval_failed", &e),
+            };
+            if html.is_empty() {
+                return err("live_sync_empty", "live page returned empty outerHTML");
+            }
+            let title = surface
+                .eval_js_result(title_js)
+                .ok()
+                .map(|t| strip_js_string_result(&t))
+                .filter(|t| !t.is_empty());
+            let url = surface
+                .eval_js_result(url_js)
+                .ok()
+                .map(|u| strip_js_string_result(&u))
+                .filter(|u| !u.is_empty());
+            let page = session_store::SavedPage {
+                url: url.clone(),
+                title: title.clone(),
+                html,
+            };
+            if let Err(e) = eng.import_page(&page) {
+                return err("live_sync_failed", &e);
+            }
+            if let Some(u) = url.clone() {
+                session.push_url(u);
+            }
+            let snap = eng.snapshot();
+            ok_json(serde_json::json!({
+                "ok": true,
+                "action": "live_sync",
+                "url": url,
+                "title": title,
+                "html_bytes": eng.html_bytes(),
+                "node_count": snap.node_count,
+                "english": format!(
+                    "Synced live WebKit DOM into engine ({} nodes, {} HTML bytes).",
+                    snap.node_count,
+                    eng.html_bytes()
+                ),
+            }))
         }
 
         "knox_find" => {
