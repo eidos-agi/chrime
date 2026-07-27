@@ -1,14 +1,15 @@
-id: "ns_46cf50bfa273"
-project_id: "418d91f4-6613-4aa6-9481-b827630afbe0"
-goal: "Build Chrime: a browser an AI agent controls at every layer by owning the engine, not puppeteering a human browser through a debug port. Total, deterministic, fine-grained agent control via a complete JSON API (zero human clicks); lean default deps; multi-view single-buffer pages; Knox credentials without secret leakage; optional GUI observation only. Acceptance is an agent scouring real authenticated Gmail through the API alone."
-metric: "pct_requirements_green"
-metric_kind: "percent"
-charter_hash: "f061ddfb8e447a64"
-serves_parent: "root"
-stop_max_iters: 500
-stop_zero_delta_n: 25
-signature: null
-created_at: "2026-07-24T19:59:04.869145+00:00"
-closed_at: null
-outcome: null
-repo_path: "/Users/dshanklinbv/repos-eidos-agi/chrime"
+"id": "ns_46cf50bfa273"
+"project_id": "418d91f4-6613-4aa6-9481-b827630afbe0"
+"goal": "Build Chrime: a real browser AIs can steer at fleet scale (~100 concurrent sessions). One engine of record per session (post-JS document), agent-native API (DOM/node-ids/settle), own the engine (not CDP-as-destination). Human view is optional attach for watch/login. Acceptance: real-app work (e.g. Gmail scour) on that engine of record via API alone."
+"metric": "pct_requirements_green"
+"metric_kind": "percent"
+"charter_hash": "0d1626c6995520351d9678a14431c61d1a05a88e2baa92b7c66041711449d6b1"
+"serves_parent": "root"
+"stop_max_iters": 500
+"stop_zero_delta_n": 25
+"signature": null
+"created_at": "2026-07-24T19:59:04.869145+00:00"
+"closed_at": null
+"outcome": null
+"repo_path": "/Users/dshanklinbv/repos-eidos-agi/chrime"
+"charter_file": "TELOS.md"
