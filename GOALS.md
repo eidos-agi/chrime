@@ -94,6 +94,8 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 53. [x] `settle` API op + `SettleReceipt` (spins/ms/quiescent) — deterministic settle, not a sleep
 54. [x] faithful-js green: post-JS DOM, JS-created nodes, JS click handlers (cases 122-127)
 55. [x] auth-session green in-process: cookies carried across navigations (case 128)
+55c. [x] live_eval / live_read / live_sync — post-JS DOM from headed WebKit (gmail-scour path)
+55d. [x] Complex gmail-scour protocol + runner (6 unrelated themes; EID-1059) — live run needs human login
 56. [x] Suite runner `--engine` flag, servo/static-only tag skipping, fixture web server
 57. [x] `docs/servo-integration.md` — Engine ↔ libservo mapping + the two engine traps
 58. [x] Cookie jar persisted to disk — `$CHRIME_PROFILE_DIR` (default `logs/profile`); cases 131/132 + control 133
