@@ -1,15 +1,16 @@
-"id": "ns_46cf50bfa273"
-"project_id": "418d91f4-6613-4aa6-9481-b827630afbe0"
-"goal": "Build Chrime: a real browser AIs can steer at fleet scale (~100 concurrent sessions). One engine of record per session (post-JS document), agent-native API (DOM/node-ids/settle), own the engine (not CDP-as-destination). Human view is optional attach for watch/login. Acceptance: real-app work (e.g. Gmail scour) on that engine of record via API alone."
-"metric": "pct_requirements_green"
-"metric_kind": "percent"
-"charter_hash": "0d1626c6995520351d9678a14431c61d1a05a88e2baa92b7c66041711449d6b1"
-"serves_parent": "root"
-"stop_max_iters": 500
-"stop_zero_delta_n": 25
-"signature": null
-"created_at": "2026-07-24T19:59:04.869145+00:00"
-"closed_at": null
-"outcome": null
-"repo_path": "/Users/dshanklinbv/repos-eidos-agi/chrime"
-"charter_file": "TELOS.md"
+id: ns_46cf50bfa273
+project_id: 418d91f4-6613-4aa6-9481-b827630afbe0
+goal: 'Build Chrime: a real browser AIs can steer at fleet scale (~100 concurrent sessions). One engine of record per session (post-JS document), agent-native API (DOM/node-ids/settle), own the engine (not
+  CDP-as-destination). Human view is optional attach for watch/login. Acceptance: real-app work (e.g. Gmail scour) on that engine of record via API alone.'
+metric: pct_requirements_green
+metric_kind: percent
+charter_hash: 0d1626c6995520351d9678a14431c61d1a05a88e2baa92b7c66041711449d6b1
+serves_parent: root
+stop_max_iters: 500
+stop_zero_delta_n: 25
+signature: null
+created_at: '2026-07-24T19:59:04.869145+00:00'
+closed_at: null
+outcome: null
+repo_path: /Users/dshanklinbv/repos-eidos-agi/chrime
+charter_file: TELOS.md
