@@ -6,11 +6,11 @@ description = "A browser built for AI agents: dual-pane GUI by default (human+AI
 license = "MIT"
 
 # ---------------------------------------------------------------------------
-# Default = GUI (dual-pane). Most real work needs a human in the loop to help
-# the agent surf; the window is the co-browsing surface. API still drives 100%.
+# Product = HEADED ONLY (dual-pane GUI). API listens on the open window.
 #
-# Lean headless (no wry/winit):
-#   cargo build --release --no-default-features
+# Headless JSONL without a window is OPT-IN for CI/suite only:
+#   cargo build --release --features headless
+# Do not ship headless as the agent default.
 #
 # Full JS engine (heavy):
 #   cargo build --release --features servo
@@ -23,7 +23,7 @@ url = "2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Desktop shell (WebKit dual-pane) — default feature
+# Desktop shell (WebKit dual-pane) — required for product builds
 wry = { version = "0.55", optional = true }
 winit = { version = "0.30", optional = true }
 
@@ -35,6 +35,8 @@ rustls = { version = "0.23", features = ["ring"], optional = true }
 [features]
 default = ["gui"]
 gui = ["dep:wry", "dep:winit"]
+# CI-only: enables `chrime --api` / `--tui` without a window. Not default. Not product.
+headless = []
 servo = ["dep:servo", "dep:dpi", "dep:rustls"]
 
 [profile.release]

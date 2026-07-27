@@ -2,6 +2,15 @@
 
 ## 0.1.0 — 2026-07-27
 
+### Fixed
+- **Toolbar buttons not clickable** — chrome WebView is now built last (top z-order) with
+  `accept_first_mouse`; toolbar updates use in-place JS instead of `load_html` (which destroyed
+  click handlers mid-interaction).
+
+### Changed
+- **Headless disabled by default.** Product builds are headed-only. `--api` / `--tui` without a
+  window require `cargo build --release --features headless` (CI suite only).
+
 ### Added
 - Collapsible agent **sidebar** (chrome `Sidebar · on/off` + `{"op":"sidebar","visible":false}`) — full-width live page when collapsed (EID-1058)
 - `forward` history stack after `back`; `status.forward_len`

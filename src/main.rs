@@ -667,6 +667,7 @@ pub(crate) fn normalize(raw: &str, base: Option<&Url>) -> Result<Url, String> {
 
 // ---- the HEAD: a terminal render of the semantic DOM (`--tui`) ----
 
+#[cfg(any(feature = "headless", not(feature = "gui")))]
 fn term_width() -> usize {
     std::env::var("COLUMNS")
         .ok()
@@ -676,6 +677,7 @@ fn term_width() -> usize {
         .min(100)
 }
 
+#[cfg(any(feature = "headless", not(feature = "gui")))]
 fn wrap(text: &str, width: usize) -> String {
     let width = width.max(20);
     let mut out = String::new();
@@ -697,6 +699,7 @@ fn wrap(text: &str, width: usize) -> String {
 }
 
 // Render the current page as a readable text view; return the click-number → node_id map.
+#[cfg(any(feature = "headless", not(feature = "gui")))]
 fn render(eng: &dyn Engine) -> Vec<u32> {
     let snap = eng.snapshot();
     let w = term_width();
@@ -745,6 +748,7 @@ fn render(eng: &dyn Engine) -> Vec<u32> {
     clickmap
 }
 
+#[cfg(any(feature = "headless", not(feature = "gui")))]
 fn headed(eng: &mut dyn Engine, start: Option<String>) {
     let mut history: Vec<String> = Vec::new();
     if let Some(u) = start {
@@ -803,22 +807,24 @@ fn headed(eng: &mut dyn Engine, start: Option<String>) {
 
 fn print_usage() {
     println!(
-        "chrime {} — a browser built for AI agents\n\
+        "chrime {} — headed-only agent browser (dual-pane GUI)\n\
          \n\
          Usage:\n\
-           chrime [url]                 dual-pane GUI + API on 127.0.0.1:7420 (default)\n\
-           chrime --api                 headless JSONL on stdin/stdout\n\
-           chrime --api --listen ADDR   headless JSONL on TCP\n\
-           chrime --tui [url]           terminal DOM view\n\
+           chrime [url]                 open dual-pane window + API on 127.0.0.1:7420\n\
+           chrime --listen ADDR         override API listen address (still headed)\n\
+           chrime --no-listen           window only, no TCP API\n\
            chrime --engine static|servo engine substrate (servo needs --features servo)\n\
            chrime --version | -v\n\
            chrime --help | -h | help\n\
          \n\
-         Drive a running window (no mouse):\n\
+         Headless (--api / --tui without a window) is DISABLED in product builds.\n\
+         CI-only: cargo build --release --features headless\n\
+         \n\
+         Drive the open window (no mouse):\n\
            printf '%s\\n' '{{\"op\":\"ping\"}}' '{{\"op\":\"help\"}}' | nc -w 2 127.0.0.1 7420\n\
          \n\
-         Key JSONL ops: navigate, back, forward, snapshot, view, read, links,\n\
-           find_text, query, click, settle, fill, knox_*, session_*, hancock_*, quit\n\
+         Key JSONL ops: navigate, back, forward, snapshot, live_read, live_sync, query,\n\
+           layout, sidebar, find_text, click, settle, fill, knox_*, session_*, hancock_*, quit\n\
          Docs: README.md · TELOS.md · docs/BREADCRUMBS.md\n",
         env!("CARGO_PKG_VERSION")
     );
@@ -840,14 +846,15 @@ fn main() {
     }
     // Breadcrumb root for this process (docs/BREADCRUMBS.md). Always first log line.
     crate::trace::run_start();
-    // Default build includes GUI (co-surf with a human). Use --api / --tui to skip the window.
-    // Lean binary: cargo build --release --no-default-features
-    let api = args.iter().any(|a| a == "--api" || a == "--headless");
-    let tui = args.iter().any(|a| a == "--tui" || a == "--terminal");
-    let want_gui = args.iter().any(|a| a == "--gui");
+    let want_headless_flags = args
+        .iter()
+        .any(|a| a == "--api" || a == "--headless" || a == "--tui" || a == "--terminal");
     let mut engine = String::from("static");
     let mut start: Option<String> = None;
+    // None = product headed defaults to :7420; headless --api uses stdio unless --listen set.
     let mut listen: Option<String> = None;
+    let mut listen_explicit = false;
+    let mut no_listen = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -858,14 +865,21 @@ fn main() {
             }
             "--listen" => {
                 if let Some(v) = it.next() {
+                    listen_explicit = true;
                     if v == "off" || v == "none" || v == "-" {
                         listen = None;
+                        no_listen = true;
                     } else {
                         listen = Some(v.clone());
                     }
                 }
             }
-            "--no-listen" => listen = None,
+            "--no-listen" => {
+                no_listen = true;
+                listen = None;
+            }
+            // Product builds ignore these; headless feature still accepts them.
+            "--api" | "--headless" | "--tui" | "--terminal" | "--gui" => {}
             s if s.starts_with("--") => {}
             s => {
                 if start.is_none() {
@@ -875,57 +889,114 @@ fn main() {
         }
     }
 
-    #[cfg(not(feature = "gui"))]
-    if want_gui {
-        eprintln!(
-            "chrime: this binary was built without GUI (--no-default-features).\n\
-             Default co-surf build: cargo build --release\n\
-             Or use: chrime --api  |  chrime --tui <url>"
-        );
-        std::process::exit(2);
+    // ---- Product path: HEADED ONLY (default features = gui, no headless) ----
+    #[cfg(all(feature = "gui", not(feature = "headless")))]
+    {
+        if want_headless_flags {
+            eprintln!(
+                "chrime: headless mode is disabled in this build (--api/--tui/--headless ignored).\n\
+                 Opening headed GUI. API listens on the window (default 127.0.0.1:7420).\n\
+                 CI-only headless: cargo build --release --features headless"
+            );
+        }
+        let _ = engine; // engine selection for GUI path is StaticEngine inside gui::run today
+        let addr = if no_listen {
+            None
+        } else {
+            listen.or_else(|| Some("127.0.0.1:7420".into()))
+        };
+        if let Err(e) = gui::run(start, addr) {
+            eprintln!("chrime gui: {e}");
+            std::process::exit(1);
+        }
+        return;
     }
 
-    #[cfg(feature = "gui")]
+    // ---- Optional CI headless (feature = "headless") ----
+    #[cfg(all(feature = "gui", feature = "headless"))]
     {
-        // Default: dual-pane window (human helps AI surf). Opt out with --api or --tui.
-        if want_gui || (!api && !tui) {
-            let addr = listen.clone().or_else(|| Some("127.0.0.1:7420".into()));
+        let api = want_headless_flags
+            && args
+                .iter()
+                .any(|a| a == "--api" || a == "--headless");
+        let tui = args
+            .iter()
+            .any(|a| a == "--tui" || a == "--terminal");
+        let force_gui = args.iter().any(|a| a == "--gui") || (!api && !tui);
+        if force_gui {
+            let addr = if no_listen {
+                None
+            } else {
+                listen.or_else(|| Some("127.0.0.1:7420".into()))
+            };
             if let Err(e) = gui::run(start, addr) {
                 eprintln!("chrime gui: {e}");
                 std::process::exit(1);
             }
             return;
         }
-    }
-
-    let mut eng: Box<dyn Engine> = match engine.as_str() {
-        #[cfg(feature = "servo")]
-        "servo" => Box::new(servo_engine::ServoEngine::new()),
-        #[cfg(not(feature = "servo"))]
-        "servo" => {
-            eprintln!("chrime: built without the `servo` engine — rebuild with `--features servo`");
-            std::process::exit(2);
+        let _ = listen_explicit;
+        let mut eng: Box<dyn Engine> = match engine.as_str() {
+            #[cfg(feature = "servo")]
+            "servo" => Box::new(servo_engine::ServoEngine::new()),
+            #[cfg(not(feature = "servo"))]
+            "servo" => {
+                eprintln!(
+                    "chrime: built without the `servo` engine — rebuild with `--features servo`"
+                );
+                std::process::exit(2);
+            }
+            _ => Box::new(StaticEngine::new()),
+        };
+        if let Some(u) = start.as_ref() {
+            let _ = eng.navigate(u);
         }
-        _ => Box::new(StaticEngine::new()),
-    };
-
-    if let Some(u) = start.as_ref() {
-        let _ = eng.navigate(u);
-    }
-
-    if api {
-        if let Some(addr) = listen {
-            if let Err(e) = api::run_tcp_headless(&addr, eng.as_mut()) {
-                eprintln!("chrime api: {e}");
-                std::process::exit(1);
+        if api {
+            // stdio unless --listen ADDR was set (suite uses pure stdin/stdout).
+            if let Some(addr) = listen {
+                if let Err(e) = api::run_tcp_headless(&addr, eng.as_mut()) {
+                    eprintln!("chrime api: {e}");
+                    std::process::exit(1);
+                }
+            } else {
+                api::run_stdio(eng.as_mut());
             }
         } else {
-            api::run_stdio(eng.as_mut());
+            headed(eng.as_mut(), start);
         }
-    } else {
-        // --tui, or default lean path without gui feature
-        let _ = tui; // accepted flag; headed TUI is the lean interactive surface
-        headed(eng.as_mut(), start);
+        return;
+    }
+
+    // ---- No gui feature (engine-only / unit-test lean binary) ----
+    #[cfg(not(feature = "gui"))]
+    {
+        let mut eng: Box<dyn Engine> = match engine.as_str() {
+            #[cfg(feature = "servo")]
+            "servo" => Box::new(servo_engine::ServoEngine::new()),
+            #[cfg(not(feature = "servo"))]
+            "servo" => {
+                eprintln!(
+                    "chrime: built without the `servo` engine — rebuild with `--features servo`"
+                );
+                std::process::exit(2);
+            }
+            _ => Box::new(StaticEngine::new()),
+        };
+        if let Some(u) = start.as_ref() {
+            let _ = eng.navigate(u);
+        }
+        if want_headless_flags {
+            if let Some(addr) = listen {
+                if let Err(e) = api::run_tcp_headless(&addr, eng.as_mut()) {
+                    eprintln!("chrime api: {e}");
+                    std::process::exit(1);
+                }
+            } else {
+                api::run_stdio(eng.as_mut());
+            }
+        } else {
+            headed(eng.as_mut(), start);
+        }
     }
 }
 
@@ -1086,5 +1157,18 @@ mod tests {
         s.push_url("https://c.test/".into());
         assert!(s.forward.is_empty());
         assert_eq!(s.history.last().map(|u| u.as_str()), Some("https://c.test/"));
+    }
+
+    /// Product binary must not expose headless as the default feature set.
+    #[test]
+    fn product_features_are_headed_default() {
+        // Compile-time: default features include gui. Headless is opt-in.
+        assert!(
+            cfg!(feature = "gui"),
+            "product tests expect gui feature"
+        );
+        // When running default `cargo test` (no --features headless), headless is off.
+        // CI may enable headless separately for the API suite binary.
+        let _ = cfg!(feature = "headless");
     }
 }

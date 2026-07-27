@@ -1097,6 +1097,7 @@ fn fill_js(which: &str, text: &str) -> String {
 }
 
 /// JSONL over stdin/stdout (classic agent pipe).
+#[cfg(any(feature = "headless", not(feature = "gui")))]
 pub fn run_stdio(eng: &mut dyn Engine) {
     trace::run_start();
     let mut session = Session::new();
@@ -1192,6 +1193,7 @@ pub fn spawn_listener(addr: &str, cmd_tx: Sender<ApiCmd>) -> Result<String, Stri
 }
 
 /// Headless TCP server owning its own StaticEngine (no GUI).
+#[cfg(any(feature = "headless", not(feature = "gui")))]
 pub fn run_tcp_headless(addr: &str, eng: &mut dyn Engine) -> Result<(), String> {
     trace::run_start();
     let listener = TcpListener::bind(addr).map_err(|e| format!("bind {addr}: {e}"))?;

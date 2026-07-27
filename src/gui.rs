@@ -676,14 +676,16 @@ impl App {
 
     fn apply_bounds(&self) {
         if let Some((c, p, s)) = self.layout() {
-            if let Some(v) = &self.chrome {
-                let _ = v.set_bounds(c);
-            }
+            // Page then side, chrome LAST so the toolbar stays topmost in z-order
+            // (macOS WKWebView: later child views receive hits when bounds overlap).
             if let Some(v) = &self.page {
                 let _ = v.set_bounds(p);
             }
             if let Some(v) = &self.side {
                 let _ = v.set_bounds(s);
+            }
+            if let Some(v) = &self.chrome {
+                let _ = v.set_bounds(c);
             }
         }
     }
@@ -813,7 +815,61 @@ impl App {
 
     fn refresh_chrome(&self) {
         let url = self.eng.current_url().unwrap_or_default();
-        if let Some(chrome) = &self.chrome {
+        let Some(chrome) = &self.chrome else {
+            return;
+        };
+        // Prefer in-place DOM updates — full load_html destroys the toolbar document and
+        // drops in-flight clicks (major UX failure: "buttons not clickable").
+        let url_js = serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".into());
+        let ai_label = if self.ai_vis {
+            if self.mark_count > 0 {
+                format!("AI vis · {}", self.mark_count)
+            } else {
+                "AI vis · ON".into()
+            }
+        } else {
+            "AI vis".into()
+        };
+        let ai_label_js = serde_json::to_string(&ai_label).unwrap_or_else(|_| "\"AI vis\"".into());
+        let layout_label_js =
+            serde_json::to_string(self.pane_mode.label()).unwrap_or_else(|_| "\"Layout\"".into());
+        let sidebar_label = if self.sidebar_visible {
+            "Sidebar · on"
+        } else {
+            "Sidebar · off"
+        };
+        let sidebar_label_js =
+            serde_json::to_string(sidebar_label).unwrap_or_else(|_| "\"Sidebar\"".into());
+        let js = format!(
+            r#"(function(){{
+  var u = document.getElementById('url');
+  if (u) u.value = {url};
+  var ai = document.getElementById('btn-ai');
+  if (ai) {{
+    ai.textContent = {ai_label};
+    if ({ai_on}) ai.classList.add('on'); else ai.classList.remove('on');
+  }}
+  var lay = document.getElementById('btn-layout');
+  if (lay) lay.textContent = {layout_label};
+  var sb = document.getElementById('btn-sidebar');
+  if (sb) {{
+    sb.textContent = {sidebar_label};
+    if ({sidebar_on}) {{ sb.classList.remove('on'); sb.classList.add('ghost'); }}
+    else {{ sb.classList.add('on'); sb.classList.remove('ghost'); }}
+  }}
+}})()"#,
+            url = url_js,
+            ai_label = ai_label_js,
+            ai_on = if self.ai_vis { "true" } else { "false" },
+            layout_label = layout_label_js,
+            sidebar_label = sidebar_label_js,
+            sidebar_on = if self.sidebar_visible {
+                "true"
+            } else {
+                "false"
+            },
+        );
+        if chrome.evaluate_script(&js).is_err() {
             let _ = chrome.load_html(&chrome_html(
                 &url,
                 self.ai_vis,
@@ -1061,29 +1117,14 @@ impl ApplicationHandler for App {
             .layout()
             .expect("window set; layout must resolve");
 
-        let tx_chrome = self.tx.clone();
-        let chrome = WebViewBuilder::new()
-            .with_bounds(chrome_r)
-            .with_initialization_script(NO_POPUPS_JS)
-            .with_html(chrome_html(
-                &start_url,
-                self.ai_vis,
-                self.mark_count,
-                self.pane_mode,
-                self.sidebar_visible,
-            ))
-            .with_ipc_handler(move |req: Request<String>| {
-                handle_ipc(req.body(), &tx_chrome);
-            })
-            .with_new_window_req_handler(|_url, _| NewWindowResponse::Deny)
-            .with_download_started_handler(|_url, _path| false)
-            .build_as_child(self.window.as_ref().unwrap())
-            .expect("chrome webview");
-
+        // Build order = z-order on macOS: first = bottom, last = top (receives clicks).
+        // Page (bottom) → side → chrome toolbar (top). Chrome was built first before and
+        // sat *under* page/side, so toolbar buttons were not clickable.
         let tx_page = self.tx.clone();
         let tx_new_win = self.tx.clone();
         let page = WebViewBuilder::new()
             .with_bounds(page_r)
+            .with_accept_first_mouse(true)
             .with_initialization_script(NO_POPUPS_JS)
             .with_url(if start_url == "about:blank" {
                 "about:blank"
@@ -1126,6 +1167,7 @@ impl ApplicationHandler for App {
         self.clickmap = clickmap;
         let side = WebViewBuilder::new()
             .with_bounds(side_r)
+            .with_accept_first_mouse(true)
             .with_initialization_script(NO_POPUPS_JS)
             .with_html(side_html_str)
             .with_ipc_handler(move |req: Request<String>| {
@@ -1136,9 +1178,31 @@ impl ApplicationHandler for App {
             .build_as_child(self.window.as_ref().unwrap())
             .expect("side webview");
 
-        self.chrome = Some(chrome);
+        let tx_chrome = self.tx.clone();
+        // Chrome LAST = topmost hit target for toolbar buttons.
+        let chrome = WebViewBuilder::new()
+            .with_bounds(chrome_r)
+            .with_accept_first_mouse(true)
+            .with_focused(true)
+            // Do NOT inject NO_POPUPS_JS into the toolbar — keep chrome event handlers simple.
+            .with_html(chrome_html(
+                &start_url,
+                self.ai_vis,
+                self.mark_count,
+                self.pane_mode,
+                self.sidebar_visible,
+            ))
+            .with_ipc_handler(move |req: Request<String>| {
+                handle_ipc(req.body(), &tx_chrome);
+            })
+            .with_new_window_req_handler(|_url, _| NewWindowResponse::Deny)
+            .with_download_started_handler(|_url, _path| false)
+            .build_as_child(self.window.as_ref().unwrap())
+            .expect("chrome webview");
+
         self.page = Some(page);
         self.side = Some(side);
+        self.chrome = Some(chrome);
         self.apply_bounds();
         // First paint overlay after a beat (page may still be settling).
         if self.ai_vis {
@@ -1373,19 +1437,28 @@ fn chrome_html(
 <body>
   <div class="brand">🕵 Chrime <span>· Fraude family</span></div>
   <form id="f" onsubmit="return go()">
-    <button type="button" class="ghost" onclick="back()" title="Back">←</button>
+    <button type="button" class="ghost" id="btn-back" title="Back">←</button>
     <input id="url" type="text" value="{url}" spellcheck="false" autocomplete="off" />
-    <button type="submit">Go</button>
-    <button type="button" class="ghost" onclick="read()">Read</button>
-    <button type="button" class="{ai_class}" onclick="toggleAi()" title="Toggle AI visibility marks on the rendered page">{ai_label}</button>
-    <button type="button" class="ghost" onclick="cycleLayout()" title="Cycle layout: auto (wide page) · side · stack">{layout_label}</button>
-    <button type="button" class="{sidebar_class}" onclick="toggleSidebar()" title="Collapse agent sidebar for full-width live page">{sidebar_label}</button>
-    <button type="button" class="ghost" onclick="knoxFind()" title="Find credentials in Knox for this site">Knox</button>
-    <button type="button" class="ghost" onclick="askHancock()" title="Ask Hancock for permission (human sign)">Hancock</button>
+    <button type="submit" id="btn-go">Go</button>
+    <button type="button" class="ghost" id="btn-read">Read</button>
+    <button type="button" class="{ai_class}" id="btn-ai" title="Toggle AI visibility marks on the rendered page">{ai_label}</button>
+    <button type="button" class="ghost" id="btn-layout" title="Cycle layout: auto · side · stack">{layout_label}</button>
+    <button type="button" class="{sidebar_class}" id="btn-sidebar" title="Collapse agent sidebar for full-width live page">{sidebar_label}</button>
+    <button type="button" class="ghost" id="btn-knox" title="Find credentials in Knox for this site">Knox</button>
+    <button type="button" class="ghost" id="btn-hancock" title="Ask Hancock for permission (human sign)">Hancock</button>
   </form>
-  <div class="hint">Sidebar collapses agent pane · full-width page</div>
+  <div class="hint">Click toolbar · sidebar collapses for full-width page</div>
   <script>
-    function post(obj) {{ window.ipc.postMessage(JSON.stringify(obj)); return false; }}
+    function post(obj) {{
+      try {{
+        if (window.ipc && window.ipc.postMessage) {{
+          window.ipc.postMessage(JSON.stringify(obj));
+        }} else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc) {{
+          window.webkit.messageHandlers.ipc.postMessage(JSON.stringify(obj));
+        }}
+      }} catch (e) {{}}
+      return false;
+    }}
     function go() {{
       return post({{op:'navigate', url: document.getElementById('url').value}});
     }}
@@ -1406,6 +1479,14 @@ fn chrome_html(
         detail: {{ url: url }}
       }});
     }}
+    // Bind via addEventListener (more reliable than inline onclick under WKWebView child views).
+    document.getElementById('btn-back').addEventListener('click', function(e) {{ e.preventDefault(); back(); }});
+    document.getElementById('btn-read').addEventListener('click', function(e) {{ e.preventDefault(); read(); }});
+    document.getElementById('btn-ai').addEventListener('click', function(e) {{ e.preventDefault(); toggleAi(); }});
+    document.getElementById('btn-layout').addEventListener('click', function(e) {{ e.preventDefault(); cycleLayout(); }});
+    document.getElementById('btn-sidebar').addEventListener('click', function(e) {{ e.preventDefault(); toggleSidebar(); }});
+    document.getElementById('btn-knox').addEventListener('click', function(e) {{ e.preventDefault(); knoxFind(); }});
+    document.getElementById('btn-hancock').addEventListener('click', function(e) {{ e.preventDefault(); askHancock(); }});
     document.getElementById('url').addEventListener('keydown', function(e) {{
       if (e.key === 'Enter') {{ e.preventDefault(); go(); }}
     }});

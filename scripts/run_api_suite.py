@@ -258,6 +258,8 @@ def case_env(case: dict) -> dict:
 def run_chrime(
     bin_path: Path, lines: list[str], timeout: float = 120.0, env: dict | None = None
 ) -> list[str]:
+    # Suite needs the CI headless flag: product builds open a GUI and ignore --api.
+    #   cargo build --release --features headless
     proc = subprocess.Popen(
         [str(bin_path), "--api", *ENGINE_ARGS],
         stdin=subprocess.PIPE,
@@ -274,6 +276,12 @@ def run_chrime(
         raise RuntimeError("chrime --api timed out")
     if proc.returncode not in (0, None) and not stdout.strip():
         raise RuntimeError(f"chrime exited {proc.returncode}: {stderr[:500]}")
+    # Detect product (headed-only) binary accidentally used for the suite.
+    if "headless mode is disabled" in (stderr or "") and not stdout.strip():
+        raise RuntimeError(
+            "this chrime binary is headed-only; rebuild suite binary with "
+            "`cargo build --release --features headless`"
+        )
     return [ln for ln in stdout.splitlines() if ln.strip()]
 
 

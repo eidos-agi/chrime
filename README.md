@@ -46,33 +46,31 @@ No JS yet (that's v1, embedded v8).
 
 ## Run
 
+**Product is headed-only.** There is always a window. The JSONL API listens on that window
+(default `127.0.0.1:7420`). Headless `--api` / `--tui` without a window is **disabled** unless
+you explicitly build with `--features headless` (CI suite only).
+
 ```sh
-# DEFAULT — dual-pane GUI (you help the AI surf) + API on 127.0.0.1:7420
+# PRODUCT — dual-pane GUI + API on 127.0.0.1:7420
 cargo build --release
 ./target/release/chrime https://www.cnn.com
 
-# Drive the open window with zero mouse clicks (API)
+# Drive the open window (zero mouse clicks)
 printf '%s\n' '{"op":"ping"}' '{"op":"status"}' | nc -w 2 127.0.0.1 7420
 
-# Headless API only (no window) — same binary
-printf '%s\n' \
-  '{"op":"navigate","url":"https://example.com"}' \
-  '{"op":"snapshot"}' | ./target/release/chrime --api
-
-# Terminal DOM view (no WebView window)
-./target/release/chrime --tui https://example.com
-
-# Lean binary (no wry/winit) for CI / pure agent
-cargo build --release --no-default-features
+# CI suite only — headless JSONL (NOT the product default)
+cargo build --release --features headless
+printf '%s\n' '{"op":"navigate","url":"https://example.com"}' '{"op":"snapshot"}' \
+  | ./target/release/chrime --api
 ```
 
 ### Dependency policy
 
 | Build | What |
 |-------|------|
-| **default** | GUI co-surf + core (wry/winit) — **normal product** |
-| `--no-default-features` | Lean core only (ureq, scraper, serde, url) |
-| `--features servo` | Full JS engine (heavy) — run it with `--engine servo` |
+| **default** | Headed GUI co-surf + API listen — **normal product** |
+| `--features headless` | CI-only: allows `--api` / `--tui` without a window |
+| `--features servo` | Full JS engine (heavy) — run with `--engine servo` |
 
 **Timeouts (static engine):** `CHRIME_TIMEOUT_SECS` (default `30`, clamp 1–600) sets the HTTP
 request timeout for `navigate` / fetch.
