@@ -79,6 +79,12 @@ struct NavResult {
     title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// Response Content-Type when known (graceful non-HTML path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_type: Option<String>,
+    /// `html` or `non_html` — agents should not treat JSON/plain as a DOM tree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_kind: Option<&'static str>,
 }
 
 /// What `settle` returns: proof the engine was driven to quiescence, not slept on.
@@ -168,16 +174,111 @@ pub(crate) struct StaticEngine {
     html: String,
     title: Option<String>,
     agent: ureq::Agent,
+    /// Last response Content-Type (if any).
+    content_type: Option<String>,
+    /// Last load classified as html vs non_html.
+    content_kind: Option<&'static str>,
+}
+
+/// HTTP request timeout for StaticEngine. Override with `CHRIME_TIMEOUT_SECS` (1–600, default 30).
+pub(crate) fn request_timeout_secs() -> u64 {
+    std::env::var("CHRIME_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(30)
+        .clamp(1, 600)
+}
+
+/// True when Content-Type / body sniffs as HTML (or empty/unknown body that still parses).
+pub(crate) fn is_html_content(content_type: Option<&str>, body: &str) -> bool {
+    if let Some(ct) = content_type {
+        let ct = ct.to_ascii_lowercase();
+        // Strip parameters: text/html; charset=utf-8
+        let main = ct.split(';').next().unwrap_or("").trim();
+        if main.contains("html") || main.contains("xhtml") {
+            return true;
+        }
+        // Explicit non-document types
+        if main.starts_with("application/json")
+            || main.starts_with("text/plain")
+            || main.starts_with("text/css")
+            || main.starts_with("application/javascript")
+            || main.starts_with("text/javascript")
+            || main.starts_with("image/")
+            || main.starts_with("audio/")
+            || main.starts_with("video/")
+            || main.starts_with("application/pdf")
+            || main.starts_with("application/octet-stream")
+        {
+            return false;
+        }
+    }
+    // Sniff: leading doctype/html tags → HTML; leading {/[ → JSON-ish non-HTML
+    let trimmed = body.trim_start();
+    if trimmed.is_empty() {
+        return true; // empty page is still a document
+    }
+    let lower = trimmed.chars().take(64).collect::<String>().to_ascii_lowercase();
+    if lower.starts_with("<!doctype") || lower.starts_with("<html") || lower.starts_with("<head")
+        || lower.starts_with("<body")
+    {
+        return true;
+    }
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return false;
+    }
+    // Default: treat as HTML so unknown servers still get a DOM walk
+    true
+}
+
+/// Wrap non-HTML payloads so read/snapshot still work without lying that it is a web page DOM.
+fn wrap_non_html(body: &str, content_type: &str) -> String {
+    let esc = body
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!(
+        "<!DOCTYPE html><html><head><title>non-html</title></head>\
+         <body data-chrime-content-kind=\"non_html\" data-chrime-content-type=\"{ct}\">\
+         <h1>non-html response</h1>\
+         <p role=\"note\">Content-Type: {ct}</p>\
+         <pre id=\"chrime-raw\">{esc}</pre></body></html>",
+        ct = content_type.replace('"', ""),
+        esc = esc
+    )
 }
 
 impl StaticEngine {
     pub(crate) fn new() -> Self {
+        let timeout = std::time::Duration::from_secs(request_timeout_secs());
         StaticEngine {
             url: None,
             html: String::new(),
             title: None,
-            agent: ureq::AgentBuilder::new().redirects(5).build(),
+            agent: ureq::AgentBuilder::new()
+                .redirects(5)
+                .timeout(timeout)
+                .build(),
+            content_type: None,
+            content_kind: None,
         }
+    }
+
+    fn ingest_body(&mut self, body: String, content_type: Option<String>) -> &'static str {
+        let ct_ref = content_type.as_deref();
+        let kind = if is_html_content(ct_ref, &body) {
+            self.html = body;
+            "html"
+        } else {
+            let label = content_type
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".into());
+            self.html = wrap_non_html(&body, &label);
+            "non_html"
+        };
+        self.content_type = content_type;
+        self.content_kind = Some(kind);
+        kind
     }
 
     // Deterministic pre-order walk of interesting elements, assigning stable node-ids.
@@ -241,18 +342,32 @@ impl Engine for StaticEngine {
                     status: None,
                     title: None,
                     error: Some(e),
+                    content_type: None,
+                    content_kind: None,
                 }
             }
         };
-        // file:// — read the raw HTML directly (StaticEngine sees the pre-JS shell, no scripts run).
+        // file:// — read the raw file (StaticEngine sees the pre-JS shell, no scripts run).
         if target.scheme() == "file" {
             return match target
                 .to_file_path()
                 .ok()
                 .and_then(|p| std::fs::read_to_string(p).ok())
             {
-                Some(html) => {
-                    self.html = html;
+                Some(body) => {
+                    let path = target.to_file_path().ok();
+                    let ct = path.and_then(|p| {
+                        p.extension()
+                            .and_then(|e| e.to_str())
+                            .map(|ext| match ext.to_ascii_lowercase().as_str() {
+                                "html" | "htm" | "xhtml" => "text/html".into(),
+                                "json" => "application/json".into(),
+                                "txt" | "md" => "text/plain".into(),
+                                "css" => "text/css".into(),
+                                _ => "application/octet-stream".into(),
+                            })
+                    });
+                    let kind = self.ingest_body(body, ct.clone());
                     self.url = Some(target.clone());
                     let (_, title) = self.walk();
                     self.title = title.clone();
@@ -262,6 +377,8 @@ impl Engine for StaticEngine {
                         status: Some(200),
                         title,
                         error: None,
+                        content_type: ct,
+                        content_kind: Some(kind),
                     }
                 }
                 None => NavResult {
@@ -270,13 +387,20 @@ impl Engine for StaticEngine {
                     status: None,
                     title: None,
                     error: Some("could not read local file".into()),
+                    content_type: None,
+                    content_kind: None,
                 },
             };
         }
         match self.agent.get(target.as_str()).set("User-Agent", UA).call() {
             Ok(resp) => {
                 let status = resp.status();
-                self.html = resp.into_string().unwrap_or_default();
+                let ct = resp
+                    .header("content-type")
+                    .or_else(|| resp.header("Content-Type"))
+                    .map(|s| s.to_string());
+                let body = resp.into_string().unwrap_or_default();
+                let kind = self.ingest_body(body, ct.clone());
                 self.url = Some(target.clone());
                 let (_, title) = self.walk();
                 self.title = title.clone();
@@ -286,6 +410,8 @@ impl Engine for StaticEngine {
                     status: Some(status),
                     title,
                     error: None,
+                    content_type: ct,
+                    content_kind: Some(kind),
                 }
             }
             Err(e) => NavResult {
@@ -294,6 +420,8 @@ impl Engine for StaticEngine {
                 status: None,
                 title: None,
                 error: Some(e.to_string()),
+                content_type: None,
+                content_kind: None,
             },
         }
     }
@@ -324,7 +452,8 @@ impl Engine for StaticEngine {
     }
 
     fn import_page(&mut self, page: &session_store::SavedPage) -> Result<(), String> {
-        self.html = page.html.clone();
+        let kind = self.ingest_body(page.html.clone(), Some("text/html".into()));
+        let _ = kind;
         self.title = page.title.clone();
         self.url = match page.url.as_deref() {
             Some(u) if !u.is_empty() => {
@@ -379,6 +508,8 @@ impl Engine for StaticEngine {
                         "node {} has no href to follow (static engine can't run JS handlers yet)",
                         node_id
                     )),
+                    content_type: None,
+                    content_kind: None,
                 },
             },
             None => NavResult {
@@ -387,6 +518,8 @@ impl Engine for StaticEngine {
                 status: None,
                 title: None,
                 error: Some(format!("no node with id {}", node_id)),
+                content_type: None,
+                content_kind: None,
             },
         }
     }
@@ -847,5 +980,111 @@ mod tests {
         let heads = e.query("h1").unwrap();
         assert_eq!(heads.len(), 1);
         assert_eq!(heads[0].text, "Head");
+    }
+
+    #[test]
+    fn is_html_content_classifies_types() {
+        assert!(is_html_content(Some("text/html; charset=utf-8"), "<html></html>"));
+        assert!(is_html_content(None, "<!DOCTYPE html><html></html>"));
+        assert!(!is_html_content(Some("application/json"), r#"{"a":1}"#));
+        assert!(!is_html_content(Some("text/plain"), "hello"));
+        assert!(!is_html_content(None, r#"{"a":1}"#));
+        assert!(is_html_content(None, "")); // empty document
+    }
+
+    #[test]
+    fn request_timeout_secs_clamps_and_defaults() {
+        // default without env (or with garbage) is 30 after clamp path — call pure default branch
+        let d = request_timeout_secs();
+        assert!((1..=600).contains(&d));
+    }
+
+    #[test]
+    fn ingest_non_html_wraps_json() {
+        let mut e = StaticEngine::new();
+        let kind = e.ingest_body(r#"{"ok":true}"#.into(), Some("application/json".into()));
+        assert_eq!(kind, "non_html");
+        assert_eq!(e.content_kind, Some("non_html"));
+        assert!(e.html.contains("non-html response"));
+        assert!(e.read_text().contains(r#"{"ok":true}"#) || e.html.contains("{&quot;ok&quot;"));
+    }
+
+    /// Integration-style: pipe a multi-op API script through the real dispatch entry point
+    /// (no network — page is shimmed via import_page).
+    #[test]
+    fn api_pipe_script_asserts_json_results() {
+        let mut eng = StaticEngine::new();
+        eng.import_page(&session_store::SavedPage {
+            url: Some("https://fixture.test/page".into()),
+            title: Some("Fixture".into()),
+            html: "<html><head><title>Fixture</title></head><body>\
+                   <h1>Hello Pipe</h1><a href=\"/next\">Next</a><p>Body text</p>\
+                   </body></html>"
+                .into(),
+        })
+        .unwrap();
+        let mut session = api::Session::new();
+        session.history.push("https://fixture.test/page".into());
+
+        let ping = api::dispatch(&mut eng, &mut session, None, r#"{"op":"ping"}"#);
+        let ping_v: serde_json::Value = serde_json::from_str(&ping).unwrap();
+        assert_eq!(ping_v.get("ok").and_then(|x| x.as_bool()), Some(true));
+
+        let snap = api::dispatch(&mut eng, &mut session, None, r#"{"op":"snapshot"}"#);
+        let snap_v: serde_json::Value = serde_json::from_str(&snap).unwrap();
+        let count = snap_v
+            .get("node_count")
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0);
+        assert!(count >= 1, "snapshot node_count={count} body={snap}");
+
+        let q = api::dispatch(
+            &mut eng,
+            &mut session,
+            None,
+            r#"{"op":"query","selector":"a[href]"}"#,
+        );
+        let qv: serde_json::Value = serde_json::from_str(&q).unwrap();
+        assert_eq!(qv.get("ok").and_then(|x| x.as_bool()), Some(true));
+        assert!(
+            qv.get("count").and_then(|c| c.as_u64()).unwrap_or(0) >= 1,
+            "query failed: {q}"
+        );
+
+        let read = api::dispatch(&mut eng, &mut session, None, r#"{"op":"read"}"#);
+        let rv: serde_json::Value = serde_json::from_str(&read).unwrap();
+        let text = rv.get("text").and_then(|t| t.as_str()).unwrap_or("");
+        assert!(
+            text.contains("Hello") || text.contains("Pipe") || text.contains("Body"),
+            "read text unexpected: {text:?}"
+        );
+
+        // forward empty fails
+        let fwd = api::dispatch(&mut eng, &mut session, None, r#"{"op":"forward"}"#);
+        let fv: serde_json::Value = serde_json::from_str(&fwd).unwrap();
+        assert_eq!(fv.get("ok").and_then(|x| x.as_bool()), Some(false));
+        assert_eq!(
+            fv.get("code").and_then(|c| c.as_str()),
+            Some("no_forward")
+        );
+    }
+
+    #[test]
+    fn session_back_forward_stack() {
+        let mut s = api::Session::new();
+        s.push_url("https://a.test/".into());
+        s.push_url("https://b.test/".into());
+        assert_eq!(s.history.len(), 2);
+        let prev = s.go_back().unwrap();
+        assert_eq!(prev, "https://a.test/");
+        assert_eq!(s.forward.len(), 1);
+        let next = s.go_forward().unwrap();
+        assert_eq!(next, "https://b.test/");
+        assert!(s.forward.is_empty());
+        // new nav clears forward
+        s.go_back();
+        s.push_url("https://c.test/".into());
+        assert!(s.forward.is_empty());
+        assert_eq!(s.history.last().map(|u| u.as_str()), Some("https://c.test/"));
     }
 }

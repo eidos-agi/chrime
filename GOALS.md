@@ -15,11 +15,11 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 7. [x] `--version` flag
 8. [x] Unit test: `normalize()` url resolution (bare / relative / full / search)
 9. [x] Unit test: `walk()`/snapshot on a fixed HTML fixture (roles + ids)
-10. [ ] Integration test: pipe an API script, assert JSON results
-11. [ ] Graceful non-HTML handling (content-type aware)
+10. [x] Integration test: pipe an API script, assert JSON results (`api_pipe_script_asserts_json_results`)
+11. [x] Graceful non-HTML handling (content-type aware) — `content_kind` + wrap for agents
 12. [x] Expose `back` + `forward` in the API
 13. [ ] Headed: show node-id beside each line (headed + API share addressing)
-14. [ ] Request timeout config + document
+14. [x] Request timeout config + document (`CHRIME_TIMEOUT_SECS`, default 30)
 15. [x] README: API table + views + Knox + dependency policy
 
 ## Chrime — product surface (2026-07-25) → TELOS
@@ -44,9 +44,9 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
        broken RC crypto `p256/p384/p521 v0.14.0-rc.14` (`Scalar: WnafSize`). Fix = version pin.
        Not toolchain, not size — a bounded dep fix.
 17. [ ] `rust-toolchain.toml` pinning 1.88 for the servo feature
-18. [ ] `ServoEngine` module (feature-gated) implementing `Engine` via WebView delegate
-19. [ ] `docs/servo-integration.md`: Engine ↔ libservo delegate mapping
-20. [ ] `--engine static|servo` flag
+18. [x] `ServoEngine` module (feature-gated) implementing `Engine` via WebView delegate
+19. [x] `docs/servo-integration.md`: Engine ↔ libservo delegate mapping
+20. [x] `--engine static|servo` flag
 21. [ ] cases/ — a runnable case script per telos requirement
 22. [ ] Telos tick: report an iteration once a requirement flips green
 
@@ -55,7 +55,7 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 24. [x] `cargo clippy` clean
 25. [x] `cargo fmt` clean
 26. [x] LICENSE (MIT for our code; Servo stays MPL in its own files)
-27. [ ] CHANGELOG.md
+27. [x] CHANGELOG.md
 
 ## Fraude OS — complete the suite
 28. [ ] Gfail GUI (inbox + compose) + tools `gfail_compose`, `gfail_list_inbox`
@@ -98,4 +98,4 @@ the Chrime telos (`ns_46cf50bfa273`) and the Fraude family it belongs to.
 57. [x] `docs/servo-integration.md` — Engine ↔ libservo mapping + the two engine traps
 58. [x] Cookie jar persisted to disk — `$CHRIME_PROFILE_DIR` (default `logs/profile`); cases 131/132 + control 133
 59. [ ] Interception + render-tree/computed-layout ops (rest of control-surfaces)
-60. [ ] Determinism case: double navigate+settle+snapshot equality
+60. [x] Determinism case: double navigate+settle+snapshot equality (suite #144)

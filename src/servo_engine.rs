@@ -257,6 +257,8 @@ impl Engine for ServoEngine {
                     status: None,
                     title: None,
                     error: Some(e),
+                    content_type: None,
+                    content_kind: None,
                 }
             }
         };
@@ -272,6 +274,8 @@ impl Engine for ServoEngine {
                 status: None,
                 title: None,
                 error: Some("navigation did not complete before the settle cap".into()),
+                content_type: None,
+                content_kind: None,
             };
         }
         self.url = Some(target.clone());
@@ -282,6 +286,8 @@ impl Engine for ServoEngine {
             status: None,
             title,
             error: None,
+            content_type: Some("text/html".into()),
+            content_kind: Some("html"),
         }
     }
 
@@ -336,6 +342,8 @@ impl Engine for ServoEngine {
             status: None,
             title: self.eval("document.title").filter(|s| !s.is_empty()),
             error: None,
+            content_type: None,
+            content_kind: Some("html"),
         }
     }
 

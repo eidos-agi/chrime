@@ -74,6 +74,12 @@ cargo build --release --no-default-features
 | `--no-default-features` | Lean core only (ureq, scraper, serde, url) |
 | `--features servo` | Full JS engine (heavy) — run it with `--engine servo` |
 
+**Timeouts (static engine):** `CHRIME_TIMEOUT_SECS` (default `30`, clamp 1–600) sets the HTTP
+request timeout for `navigate` / fetch.
+
+**Non-HTML:** navigate returns `content_kind` of `html` or `non_html` (and `content_type` when
+known). JSON/plain/etc. is wrapped so `read` still works without pretending it is a DOM page.
+
 With `--engine servo` the page's JavaScript actually runs, and the login sticks: cookies are
 kept in a profile dir (`CHRIME_PROFILE_DIR`, default `logs/profile`) and reloaded next launch,
 so a fresh process starts already authenticated. That dir holds live session cookies — treat it

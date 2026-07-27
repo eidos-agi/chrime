@@ -73,7 +73,7 @@ impl Session {
     }
 
     /// Record a user-driven navigation. Invalidates anything that was in the forward stack.
-    fn push_url(&mut self, url: String) {
+    pub(crate) fn push_url(&mut self, url: String) {
         if self.history.last().map(|u| u.as_str()) != Some(url.as_str()) {
             self.history.push(url);
             self.forward.clear();
@@ -81,7 +81,7 @@ impl Session {
     }
 
     /// Pop current URL onto the forward stack; return the previous URL to load.
-    fn go_back(&mut self) -> Option<String> {
+    pub(crate) fn go_back(&mut self) -> Option<String> {
         if self.history.len() <= 1 {
             return None;
         }
@@ -92,7 +92,7 @@ impl Session {
     }
 
     /// Pop the next forward URL onto history; return it to load.
-    fn go_forward(&mut self) -> Option<String> {
+    pub(crate) fn go_forward(&mut self) -> Option<String> {
         let next = self.forward.pop()?;
         self.history.push(next.clone());
         Some(next)
